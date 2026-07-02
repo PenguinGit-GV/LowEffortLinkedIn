@@ -2,14 +2,14 @@
 
 **Effective date:** July 2, 2026
 
-LowEffortLinkedIn is an internal tool for [Company Name] employees. It lets a
+LowEffortLinkedIn is an internal tool for Dr. Claw Development employees. It lets a
 marketer draft LinkedIn post ideas in Slack, and lets employees connect their
 own LinkedIn account once and share those ideas to their personal LinkedIn
 profile with one click. This policy explains what the app stores about you,
 why, and what it does not do.
 
 It is not a general-purpose consumer product — it is only used by
-[Company Name] employees inside [Company Name]'s Slack workspace.
+Dr. Claw Development employees inside Dr. Claw Development's Slack workspace.
 
 ## What we store
 
@@ -57,7 +57,7 @@ may later share it.
   [LinkedIn account settings](https://www.linkedin.com/psettings/permitted-services),
   which invalidates the token on LinkedIn's side.
 - To request deletion of your stored data (Slack ID, token record, or share
-  history) from our database, contact [contact email].
+  history) from our database, contact hello@drclaw.dev.
 
 ## Third-party services
 
@@ -75,4 +75,4 @@ updated and the effective date above will change accordingly.
 
 ## Contact
 
-Questions about this policy or your data: [contact email].
+Questions about this policy or your data: hello@drclaw.dev.
