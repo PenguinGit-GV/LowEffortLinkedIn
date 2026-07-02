@@ -65,14 +65,22 @@ function createShareClient(config, { logger = console } = {}) {
         { headers: restHeaders(accessToken), timeout: HTTP_TIMEOUT_MS }
       );
       const { uploadUrl, image } = init.data.value;
-      await axios.put(uploadUrl, bytes, {
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-          'Content-Type': 'application/octet-stream',
-        },
-        timeout: HTTP_TIMEOUT_MS,
-        maxBodyLength: Infinity,
-      });
+      try {
+        await axios.put(uploadUrl, bytes, {
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            'Content-Type': 'application/octet-stream',
+          },
+          timeout: HTTP_TIMEOUT_MS,
+          maxBodyLength: Infinity,
+        });
+      } catch (err) {
+        // Pre-signed CDN URL — a 401 here (e.g. expired upload URL) is a
+        // share failure, NOT a token revocation. Tag it so the pipeline
+        // doesn't send the user through the reconnect flow.
+        err.isCdnUpload = true;
+        throw err;
+      }
       return image;
     },
 

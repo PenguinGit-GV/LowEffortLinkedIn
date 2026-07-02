@@ -66,7 +66,7 @@ function buildPostCard({ post, shareCount }) {
         type: 'mrkdwn',
         text:
           `Posted by <@${post.created_by_slack_id}> · ` +
-          `<!date^${unix}^{date_short}|${isoDay}> · ✅ ${shareCount} shares`,
+          `<!date^${unix}^{date_short}|${isoDay}> · ✅ ${shareCount} share${shareCount === 1 ? '' : 's'}`,
       },
     ],
   });

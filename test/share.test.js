@@ -162,7 +162,9 @@ describe('runSharePipeline', () => {
     const update = d.client.chat.update.mock.calls[0][0];
     expect(update.channel).toBe('C123');
     expect(update.ts).toBe('1719900000.000100');
-    expect(JSON.stringify(update.blocks)).toContain('✅ 1 shares');
+    const blocksJson = JSON.stringify(update.blocks);
+    expect(blocksJson).toContain('✅ 1 share');
+    expect(blocksJson).not.toContain('✅ 1 shares');
     // First successful share → ✅ reaction.
     expect(d.client.reactions.add).toHaveBeenCalledTimes(1);
   });
@@ -231,6 +233,41 @@ describe('runSharePipeline', () => {
     expect(msg).toContain('Content is a duplicate');
     expect(msg).toContain('<@U111>');
     expect(d.client.chat.update).not.toHaveBeenCalled();
+  });
+
+  test('huge LinkedIn error → C6 stays under Slack limits, full text in the DB row', async () => {
+    const bigError = 'E'.repeat(5000);
+    const shareClient = okShareClient();
+    shareClient.createPost.mockRejectedValue({
+      response: { status: 422, data: { message: bigError } },
+      message: 'Request failed',
+    });
+    const d = deps({ shareClient });
+    await runSharePipeline(d, JOB);
+
+    const msg = d.client.chat.postEphemeral.mock.calls[0][0].text;
+    expect(msg.length).toBeLessThan(1000);
+    expect(msg).toContain('…');
+    expect(d._dbParts.shareInserts[0].error_message).toHaveLength(2000);
+  });
+
+  test('a 401 from the image CDN PUT is a share failure, not a revocation', async () => {
+    const post = { ...POST, image_slack_file_id: 'F123' };
+    const fetchFile = jest.fn().mockResolvedValue(Buffer.from('png'));
+    const shareClient = okShareClient();
+    const cdnErr = Object.assign(new Error('upload url expired'), {
+      response: { status: 401 },
+      isCdnUpload: true,
+    });
+    shareClient.uploadImage.mockRejectedValue(cdnErr);
+    const d = deps({ dbParts: fakeDb({ post }), shareClient, fetchFile });
+    await runSharePipeline(d, JOB);
+
+    expect(d._dbParts.userUpdates).toHaveLength(0); // token NOT cleared
+    expect(d._dbParts.shareInserts[0]).toEqual(expect.objectContaining({ status: 'failed' }));
+    const msg = d.client.chat.postEphemeral.mock.calls[0][0].text;
+    expect(msg).not.toContain('Connect your LinkedIn');
+    expect(msg).toContain('upload url expired');
   });
 
   test('LinkedIn 401 → token cleared, connect prompt, failed row (trigger point 3)', async () => {
@@ -392,6 +429,60 @@ describe('registered handlers', () => {
     const ackArg = ack.mock.calls[0][0];
     expect(ackArg.response_action).toBe('errors');
     expect(ackArg.errors.custom_caption).toContain('image');
+  });
+
+  test('edit button: a DB failure still gives the user feedback', async () => {
+    const brokenDb = () => ({
+      where: () => ({ first: async () => { throw new Error('connection refused'); } }),
+    });
+    brokenDb.fn = { now: () => new Date() };
+    const handlers = { actions: [], views: [] };
+    const app = {
+      action: (id, fn) => handlers.actions.push([id, fn]),
+      view: (id, fn) => handlers.views.push([id, fn]),
+    };
+    registerShareHandlers(app, { config: testConfig(), db: brokenDb, shareClient: okShareClient() });
+    const [, fn] = handlers.actions.find(([id]) => id === 'edit_share_custom');
+
+    const client = fakeClient();
+    await fn({
+      ack: jest.fn(),
+      body: { user: { id: 'U777' }, channel: { id: 'C123' }, trigger_id: 't' },
+      action: { value: JSON.stringify({ post_id: 'post-1' }) },
+      client,
+      logger: quietLogger,
+    });
+    expect(client.chat.postEphemeral.mock.calls[0][0].text).toContain('Could not open the editor');
+  });
+
+  test('custom modal: a pre-ack DB failure keeps the modal open with a field error', async () => {
+    const brokenDb = () => ({
+      where: () => ({ first: async () => { throw new Error('connection refused'); } }),
+    });
+    brokenDb.fn = { now: () => new Date() };
+    const handlers = { actions: [], views: [] };
+    const app = {
+      action: (id, fn) => handlers.actions.push([id, fn]),
+      view: (id, fn) => handlers.views.push([id, fn]),
+    };
+    registerShareHandlers(app, { config: testConfig(), db: brokenDb, shareClient: okShareClient() });
+    const [, fn] = handlers.views[0];
+
+    const ack = jest.fn();
+    await fn({
+      ack,
+      body: { user: { id: 'U777' } },
+      view: {
+        private_metadata: JSON.stringify({ post_id: 'post-1', channel_id: 'C123' }),
+        state: { values: { custom_caption: { value: { value: 'Fine caption' } } } },
+      },
+      client: fakeClient(),
+      logger: quietLogger,
+    });
+    expect(ack).toHaveBeenCalledWith({
+      response_action: 'errors',
+      errors: { custom_caption: expect.stringContaining('try submitting again') },
+    });
   });
 
   test('custom modal submission runs the pipeline with variation CUSTOM', async () => {

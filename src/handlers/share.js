@@ -22,7 +22,10 @@ const PG_UNIQUE_VIOLATION = '23505';
 // in-process. Layer 2 is the partial unique index on shares.
 const inFlight = new Set();
 
-const is401 = (err) => err.response?.status === 401;
+// A 401 means the member revoked the token — but only on LinkedIn's REST
+// endpoints. The image CDN PUT (pre-signed URL) can 401 for its own reasons
+// (expired upload URL), which is a share failure, not a revocation.
+const is401 = (err) => err.response?.status === 401 && !err.isCdnUpload;
 const linkedinErrorText = (err) =>
   err.response?.data?.message || err.data?.error || err.message || 'unknown error';
 
@@ -139,11 +142,16 @@ async function runSharePipeline(
     };
     const failShare = async (errorMessage) => {
       await recordFailure(errorMessage);
+      // LinkedIn error bodies can be huge (payload echoes); an untruncated one
+      // would push C6 past Slack's message limit and the user would get
+      // nothing at all. The full text is in the shares row.
+      const brief =
+        errorMessage.length > 400 ? `${errorMessage.slice(0, 400)}…` : errorMessage;
       await postEphemeralSafely(
         { client, logger },
         channelId,
         userId,
-        copy.C6(errorMessage, `<@${config.marketerSlackIds[0]}>`)
+        copy.C6(brief, `<@${config.marketerSlackIds[0]}>`)
       );
     };
 
@@ -281,30 +289,31 @@ function registerShareHandlers(app, { config, db, shareClient, fetchFile }) {
 
   app.action('edit_share_custom', async ({ ack, body, action, client, logger }) => {
     await ack();
-    let value;
     try {
-      value = JSON.parse(action.value);
-    } catch {
-      logger.error(`Unparseable custom button value: ${action.value}`);
-      return;
-    }
-    const post = await db('posts').where({ id: value.post_id }).first();
-    if (!post) {
-      await postEphemeralSafely(
-        { client, logger },
-        body.channel?.id,
-        body.user.id,
-        '😕 This post no longer exists.'
-      );
-      return;
-    }
-    try {
+      let value;
+      try {
+        value = JSON.parse(action.value);
+      } catch {
+        logger.error(`Unparseable custom button value: ${action.value}`);
+        return;
+      }
+      const post = await db('posts').where({ id: value.post_id }).first();
+      if (!post) {
+        await postEphemeralSafely(
+          { client, logger },
+          body.channel?.id,
+          body.user.id,
+          '😕 This post no longer exists.'
+        );
+        return;
+      }
       await client.views.open({
         trigger_id: body.trigger_id,
         view: buildCustomShareModal({ post, channelId: body.channel?.id || null }),
       });
     } catch (err) {
-      logger.error('views.open failed', err);
+      // DB or views.open failure — the user clicked and must hear something.
+      logger.error('edit_share_custom failed', err);
       await postEphemeralSafely(
         { client, logger },
         body.channel?.id,
@@ -338,7 +347,19 @@ function registerShareHandlers(app, { config, db, shareClient, fetchFile }) {
       return;
     }
 
-    const post = meta.post_id ? await db('posts').where({ id: meta.post_id }).first() : null;
+    let post;
+    try {
+      post = meta.post_id ? await db('posts').where({ id: meta.post_id }).first() : null;
+    } catch (err) {
+      // Pre-ack DB failure: keep the modal open with a field error instead of
+      // letting the ack window lapse into Slack's opaque timeout banner.
+      logger.error('Custom share modal post lookup failed', err);
+      await ack({
+        response_action: 'errors',
+        errors: { custom_caption: 'Something went wrong — please try submitting again.' },
+      });
+      return;
+    }
     // With an image, the destination URL is appended to the commentary (§4),
     // so caption + separator + URL must fit the same limit.
     if (post?.image_slack_file_id) {
