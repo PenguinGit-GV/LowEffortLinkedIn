@@ -1,4 +1,5 @@
 const { App, ExpressReceiver } = require('@slack/bolt');
+const { WebClient } = require('@slack/web-api');
 
 const { registerCreatePost } = require('./handlers/createPost');
 const { registerAuthRoutes } = require('./routes/auth');
@@ -44,7 +45,15 @@ function createServer(config, db, overrides = {}) {
   registerAuthRoutes(receiver.router, {
     config,
     db,
-    slackClient: overrides.slackClient || app.client,
+    // Dedicated client with tightly bounded retries: the OAuth routes' Slack
+    // calls are best-effort notifications, and the default policy (ten
+    // retries over ~30 minutes) would keep callback handlers alive across a
+    // Slack outage.
+    slackClient:
+      overrides.slackClient ||
+      new WebClient(config.slackBotToken, {
+        retryConfig: { retries: 2, minTimeout: 500, maxTimeout: 2000 },
+      }),
     linkedin: overrides.linkedin,
     ...(overrides.logger ? { logger: overrides.logger } : {}),
   });

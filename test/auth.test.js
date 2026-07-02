@@ -170,13 +170,39 @@ describe('GET /auth/linkedin/callback', () => {
     expect(upserts).toHaveLength(0);
   });
 
-  test('non-cancel LinkedIn error → generic error page', async () => {
+  test('non-cancel LinkedIn error → 502 with the generic error page', async () => {
     const { agent } = buildApp({ config: realModeConfig(), linkedin: okLinkedin() });
     const res = await agent
       .get('/auth/linkedin/callback')
       .query({ error: 'server_error' });
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(502);
     expect(res.text).toContain('Something went wrong');
+  });
+
+  test('a connect token replayed as state is rejected (purpose confusion)', async () => {
+    const linkedin = okLinkedin();
+    const { agent, upserts } = buildApp({ config: realModeConfig(), linkedin });
+    const res = await agent
+      .get('/auth/linkedin/callback')
+      .query({ code: 'code-1', state: connectToken('U777') });
+    expect(res.status).toBe(400);
+    expect(linkedin.exchangeCodeForToken).not.toHaveBeenCalled();
+    expect(upserts).toHaveLength(0);
+  });
+
+  test('a state token is single-use: the second presentation is rejected', async () => {
+    const linkedin = okLinkedin();
+    const { agent, upserts } = buildApp({ config: realModeConfig(), linkedin });
+    const state = stateToken('U777');
+
+    const first = await agent.get('/auth/linkedin/callback').query({ code: 'code-1', state });
+    expect(first.status).toBe(200);
+
+    const replay = await agent.get('/auth/linkedin/callback').query({ code: 'code-2', state });
+    expect(replay.status).toBe(400);
+    expect(replay.text).toContain('This link has expired');
+    expect(linkedin.exchangeCodeForToken).toHaveBeenCalledTimes(1);
+    expect(upserts).toHaveLength(1);
   });
 
   test('tampered/expired state → 400 P3, nothing stored', async () => {
@@ -228,6 +254,44 @@ describe('GET /auth/linkedin/callback', () => {
     expect(slackClient.chat.postMessage).toHaveBeenCalledWith(
       expect.objectContaining({ channel: 'U777' })
     );
+  });
+
+  test('a 200 token response missing expires_in → 502, nothing stored', async () => {
+    const linkedin = {
+      exchangeCodeForToken: jest.fn().mockResolvedValue({ accessToken: 'tok' }),
+      fetchUserInfo: jest.fn().mockResolvedValue({ sub: 'AbC123xyz' }),
+    };
+    const { agent, upserts } = buildApp({ config: realModeConfig(), linkedin });
+    const res = await agent
+      .get('/auth/linkedin/callback')
+      .query({ code: 'code-1', state: stateToken('U777') });
+    expect(res.status).toBe(502);
+    expect(upserts).toHaveLength(0);
+  });
+
+  test('a userinfo response missing sub → 502, nothing stored', async () => {
+    const linkedin = {
+      exchangeCodeForToken: jest
+        .fn()
+        .mockResolvedValue({ accessToken: 'tok', expiresIn: 5184000 }),
+      fetchUserInfo: jest.fn().mockResolvedValue({ name: 'No Sub' }),
+    };
+    const { agent, upserts } = buildApp({ config: realModeConfig(), linkedin });
+    const res = await agent
+      .get('/auth/linkedin/callback')
+      .query({ code: 'code-1', state: stateToken('U777') });
+    expect(res.status).toBe(502);
+    expect(upserts).toHaveLength(0);
+  });
+
+  test('OAuth result pages are sent with no-store and nosniff headers', async () => {
+    const { agent } = buildApp({ config: realModeConfig(), linkedin: okLinkedin() });
+    const res = await agent
+      .get('/auth/linkedin/callback')
+      .query({ code: 'code-1', state: stateToken('U777') });
+    expect(res.status).toBe(200);
+    expect(res.headers['cache-control']).toBe('no-store');
+    expect(res.headers['x-content-type-options']).toBe('nosniff');
   });
 
   test('LinkedIn exchange failure → 502 error page, nothing stored', async () => {

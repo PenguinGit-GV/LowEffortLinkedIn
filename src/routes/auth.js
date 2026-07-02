@@ -8,12 +8,23 @@ const copy = require('../copy');
 const pages = require('../pages');
 const { signToken, verifyToken } = require('../crypto/signedToken');
 const { encryptToken } = require('../crypto/tokenCipher');
+const { createSingleUseGuard } = require('../crypto/singleUse');
 const defaultLinkedin = require('../linkedin/oauth');
 
 const STATE_TTL_SECONDS = 10 * 60;
 // Mock connections mirror LinkedIn's real ~60-day token lifetime so the
 // Phase 6 reminder job is exercisable in dev too.
 const MOCK_TOKEN_LIFETIME_SECONDS = 60 * 24 * 60 * 60;
+
+// OAuth result pages must never be cached (they reflect a one-time flow) and
+// carry no scripts, but nosniff costs nothing.
+function sendPage(res, status, html) {
+  res
+    .status(status)
+    .set('Cache-Control', 'no-store')
+    .set('X-Content-Type-Options', 'nosniff')
+    .send(html);
+}
 
 async function upsertConnection(db, { slackUserId, encryptedToken, personId, expiresAt }) {
   await db('users')
@@ -46,12 +57,15 @@ async function notifyConnected({ slackClient, logger }, slackUserId) {
 
 function registerAuthRoutes(router, { config, db, slackClient, linkedin, logger = console }) {
   const li = linkedin || defaultLinkedin;
+  // States are single-use; connect links stay multi-use within their TTL so a
+  // refresh of /auth/linkedin (or a second click on the button) still works.
+  const consumeState = createSingleUseGuard();
 
   router.get('/auth/linkedin', async (req, res) => {
     try {
       const payload = verifyToken(req.query.token, config.oauthStateSecret, 'connect');
       if (!payload || !payload.slack_user_id) {
-        res.status(400).send(pages.expired());
+        sendPage(res, 400, pages.expired());
         return;
       }
       const slackUserId = payload.slack_user_id;
@@ -65,7 +79,7 @@ function registerAuthRoutes(router, { config, db, slackClient, linkedin, logger 
           personId: `mock-${slackUserId}`,
           expiresAt: new Date(Date.now() + MOCK_TOKEN_LIFETIME_SECONDS * 1000),
         });
-        res.status(200).send(pages.success());
+        sendPage(res, 200, pages.success());
         await notifyConnected({ slackClient, logger }, slackUserId);
         return;
       }
@@ -78,54 +92,69 @@ function registerAuthRoutes(router, { config, db, slackClient, linkedin, logger 
       res.redirect(302, li.buildAuthorizationUrl(config, state));
     } catch (err) {
       logger.error('GET /auth/linkedin failed:', err);
-      if (!res.headersSent) res.status(500).send(pages.error());
+      if (!res.headersSent) sendPage(res, 500, pages.error());
     }
   });
 
   router.get('/auth/linkedin/callback', async (req, res) => {
     try {
       // Deny path first: LinkedIn redirects back with ?error when the user
-      // cancels on the consent screen (§2.2 step 4).
+      // cancels on the consent screen (§2.2 step 4). A cancel is a normal
+      // outcome (200/P2); anything else is LinkedIn failing (502) so it shows
+      // up in monitoring.
       if (req.query.error) {
         const cancelled = String(req.query.error).startsWith('user_cancelled');
-        res.status(200).send(cancelled ? pages.cancelled() : pages.error());
+        if (cancelled) {
+          sendPage(res, 200, pages.cancelled());
+        } else {
+          logger.error(`LinkedIn authorization failed: ${String(req.query.error)}`);
+          sendPage(res, 502, pages.error());
+        }
         return;
       }
 
       const payload = verifyToken(req.query.state, config.oauthStateSecret, 'state');
-      if (!payload || !payload.slack_user_id || !req.query.code) {
-        res.status(400).send(pages.expired());
+      if (!payload || !payload.slack_user_id || !req.query.code || !consumeState(payload)) {
+        sendPage(res, 400, pages.expired());
         return;
       }
       const slackUserId = payload.slack_user_id;
 
       let accessToken;
       let expiresIn;
-      let userInfo;
+      let personId;
       try {
         ({ accessToken, expiresIn } = await li.exchangeCodeForToken(config, req.query.code));
-        userInfo = await li.fetchUserInfo(accessToken);
+        // Guard against schema drift (PLAN.md §10): a 200 with missing fields
+        // must fail here, not as an Invalid Date / undefined binding at the
+        // upsert below.
+        if (!accessToken || !Number.isFinite(expiresIn) || expiresIn <= 0) {
+          throw new Error('token response missing access_token/expires_in');
+        }
+        const userInfo = await li.fetchUserInfo(accessToken);
+        personId = userInfo?.sub;
+        if (!personId) throw new Error('userinfo response missing sub');
       } catch (err) {
         // Never log the token or the full response; the status line is enough
         // to debug against LinkedIn's docs.
         logger.error(
           `LinkedIn OAuth exchange failed: ${err.response?.status || ''} ${err.message}`
         );
-        res.status(502).send(pages.error());
+        sendPage(res, 502, pages.error());
         return;
       }
 
       await upsertConnection(db, {
         slackUserId,
         encryptedToken: encryptToken(accessToken, config.tokenEncryptionKey),
-        personId: userInfo.sub,
+        personId,
         expiresAt: new Date(Date.now() + expiresIn * 1000),
       });
-      res.status(200).send(pages.success());
+      sendPage(res, 200, pages.success());
       await notifyConnected({ slackClient, logger }, slackUserId);
     } catch (err) {
       logger.error('GET /auth/linkedin/callback failed:', err);
-      if (!res.headersSent) res.status(500).send(pages.error());
+      if (!res.headersSent) sendPage(res, 500, pages.error());
     }
   });
 }
