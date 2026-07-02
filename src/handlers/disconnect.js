@@ -5,11 +5,26 @@
 // nothing to delete gives the same friendly response.
 
 const copy = require('../copy');
+const { escapeMrkdwn } = require('../mrkdwn');
 
 function registerDisconnect(app, { db }) {
   app.command('/disconnect', async ({ command, ack, respond, logger }) => {
     await ack();
-    const eraseAll = (command.text || '').trim().toLowerCase() === 'all';
+    const arg = (command.text || '').trim().toLowerCase();
+    const eraseAll = arg === 'all';
+    // A typo like "/disconnect al" must not silently do the lesser action —
+    // ask instead of guessing.
+    if (arg && !eraseAll) {
+      // arg is user input rendered in mrkdwn — escape it and keep it short.
+      const shown = escapeMrkdwn(arg.slice(0, 30)).replace(/`/g, "'");
+      await respond({
+        response_type: 'ephemeral',
+        text:
+          `🤔 I didn't recognize \`${shown}\`. Use \`/disconnect\` to remove your LinkedIn ` +
+          'connection (share history kept), or `/disconnect all` to erase your share history too.',
+      });
+      return;
+    }
     try {
       if (eraseAll) {
         // ON DELETE CASCADE on shares.slack_user_id erases history with the row.

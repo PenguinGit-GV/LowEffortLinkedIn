@@ -27,6 +27,7 @@ module.exports = {
     `📣 *Your post is live in ${channelMention}!* You'll see the share counter tick up on the card.`,
   C10: (marketerMention) =>
     `🚫 Sorry, only the marketing team can create posts. Think you should have access? Ask ${marketerMention}.`,
-  C11_HEADER: (days, total) => `🏆 *Top sharers, last ${days} days* — ${total} shares total`,
+  C11_HEADER: (days, total) =>
+    `🏆 *Top sharers, last ${days} days* — ${total} share${total === 1 ? '' : 's'} total`,
   C11_EMPTY: 'No shares in this window yet — be the first! 👀',
 };

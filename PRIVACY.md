@@ -56,7 +56,8 @@ may later share it.
 - You can disconnect at any time, self-service, by running `/disconnect` in
   Slack — this deletes your stored LinkedIn token immediately (your share
   history is kept for the leaderboard). Run `/disconnect all` to also erase
-  your share history and every record tied to your Slack ID.
+  your entire share history and LinkedIn connection record. (Post content
+  authored via `/create-post` is campaign material and is retained.)
 - You can additionally revoke the app's access from your
   [LinkedIn account settings](https://www.linkedin.com/psettings/permitted-services),
   which invalidates the token on LinkedIn's side.

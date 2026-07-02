@@ -60,7 +60,7 @@ describe('/disconnect', () => {
     expect(respond).toHaveBeenCalledWith({ response_type: 'ephemeral', text: copy.C8 });
   });
 
-  test('unknown argument is treated as a plain disconnect, not erasure', async () => {
+  test('unknown argument gets a usage hint and touches nothing', async () => {
     const { handler, calls } = setup();
     const respond = jest.fn();
     await handler({
@@ -70,8 +70,26 @@ describe('/disconnect', () => {
       logger,
     });
     expect(calls.deletes).toHaveLength(0);
-    expect(calls.updates).toHaveLength(1);
-    expect(respond).toHaveBeenCalledWith({ response_type: 'ephemeral', text: copy.C7 });
+    expect(calls.updates).toHaveLength(0);
+    const text = respond.mock.calls[0][0].text;
+    expect(text).toContain("didn't recognize");
+    expect(text).toContain('everything');
+  });
+
+  test('the unknown-argument echo is mrkdwn-escaped', async () => {
+    const { handler, calls } = setup();
+    const respond = jest.fn();
+    await handler({
+      command: { user_id: 'U777', text: '<!channel>`boom`' },
+      ack: jest.fn(),
+      respond,
+      logger,
+    });
+    expect(calls.updates).toHaveLength(0);
+    const text = respond.mock.calls[0][0].text;
+    expect(text).not.toContain('<!channel>');
+    expect(text).toContain('&lt;!channel&gt;');
+    expect(text).not.toContain('`boom`');
   });
 
   test('acts only on the caller — the target comes from command.user_id', async () => {

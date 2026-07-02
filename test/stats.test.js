@@ -43,6 +43,14 @@ describe('formatLeaderboard', () => {
     expect(text).toContain('last 7 days');
     expect(text).toContain('be the first');
   });
+
+  test('the header total pluralizes', () => {
+    const one = formatLeaderboard(30, { total: 1, leaders: [{ slack_user_id: 'U1', count: 1 }] });
+    expect(one).toContain('1 share total');
+    expect(one).not.toContain('1 shares total');
+    const many = formatLeaderboard(30, { total: 2, leaders: [{ slack_user_id: 'U1', count: 2 }] });
+    expect(many).toContain('2 shares total');
+  });
 });
 
 describe('fetchLeaderboard', () => {
