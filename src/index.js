@@ -3,16 +3,21 @@ require('dotenv').config();
 const { loadConfig } = require('./config');
 const { createDb } = require('./db/knex');
 const { createServer } = require('./server');
+const { startExpiryReminderJob } = require('./jobs/expiryReminder');
 
 async function main() {
   const config = loadConfig();
   const db = createDb(config);
   const { app } = createServer(config, db);
 
+  // Fail fast on a bad REMINDER_CRON before the server accepts traffic.
+  const reminderJob = startExpiryReminderJob({ config, db });
+
   await app.start(config.port);
   console.log(
     `⚡ LowEffortLinkedIn listening on :${config.port}` +
-      ` (env: ${config.nodeEnv}, LinkedIn mock mode: ${config.linkedinMockMode})`
+      ` (env: ${config.nodeEnv}, LinkedIn mock mode: ${config.linkedinMockMode},` +
+      ` reminder cron: ${config.reminderCron})`
   );
 
   // Railway sends SIGTERM on redeploys; drain in-flight requests and release
@@ -20,6 +25,7 @@ async function main() {
   const shutdown = async (signal) => {
     console.log(`${signal} received, shutting down`);
     try {
+      reminderJob.stop();
       await app.stop();
       await db.destroy();
       process.exit(0);

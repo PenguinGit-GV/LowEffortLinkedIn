@@ -68,6 +68,8 @@ function loadConfig(env = process.env) {
     linkedinRedirectUri: env.LINKEDIN_REDIRECT_URI || null,
     // Versioned-API header (YYYYMM); override when LinkedIn sunsets the default.
     linkedinVersion: env.LINKEDIN_API_VERSION || '202506',
+    // Daily token-expiry reminder schedule (UTC); validated at job start.
+    reminderCron: env.REMINDER_CRON || '0 9 * * *',
     port,
     nodeEnv: env.NODE_ENV || 'development',
   };
