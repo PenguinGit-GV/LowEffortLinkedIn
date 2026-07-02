@@ -17,16 +17,16 @@ features:
     always_online: true
   slash_commands:
     - command: /create-post
-      url: https://YOUR-APP.up.railway.app/slack/events
+      url: https://app-production-5e11.up.railway.app/slack/events
       description: "Marketing only: create a shareable LinkedIn post bundle"
       should_escape: false
     - command: /disconnect
-      url: https://YOUR-APP.up.railway.app/slack/events
+      url: https://app-production-5e11.up.railway.app/slack/events
       description: Disconnect your LinkedIn (add "all" to also erase share history)
       usage_hint: "[all]"
       should_escape: false
     - command: /advocacy-stats
-      url: https://YOUR-APP.up.railway.app/slack/events
+      url: https://app-production-5e11.up.railway.app/slack/events
       description: Leaderboard of top sharers
       usage_hint: "[days, default 30]"
       should_escape: false
@@ -44,7 +44,7 @@ oauth_config:
 settings:
   interactivity:
     is_enabled: true
-    request_url: https://YOUR-APP.up.railway.app/slack/events
+    request_url: https://app-production-5e11.up.railway.app/slack/events
   org_deploy_enabled: false
   socket_mode_enabled: false
   token_rotation_enabled: false
