@@ -48,6 +48,11 @@ function loadConfig(env = process.env) {
     );
   }
 
+  const port = Number.parseInt(env.PORT || '3000', 10);
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    throw new Error(`PORT must be an integer between 1 and 65535, got "${env.PORT}"`);
+  }
+
   return {
     slackBotToken,
     slackSigningSecret,
@@ -61,7 +66,7 @@ function loadConfig(env = process.env) {
     linkedinClientId: env.LINKEDIN_CLIENT_ID || null,
     linkedinClientSecret: env.LINKEDIN_CLIENT_SECRET || null,
     linkedinRedirectUri: env.LINKEDIN_REDIRECT_URI || null,
-    port: Number.parseInt(env.PORT || '3000', 10),
+    port,
     nodeEnv: env.NODE_ENV || 'development',
   };
 }

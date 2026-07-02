@@ -5,11 +5,13 @@ const { App, ExpressReceiver } = require('@slack/bolt');
 // Slack handlers (Phase 2/4/5) and auth routes (Phase 3) register here.
 //
 // overrides.authorize lets tests supply a static authorization and skip the
-// auth.test call Bolt otherwise makes against the real Slack API.
+// auth.test call Bolt otherwise makes against the real Slack API;
+// overrides.logLevel quiets Bolt's logger in tests.
 function createServer(config, db, overrides = {}) {
   const receiver = new ExpressReceiver({
     signingSecret: config.slackSigningSecret,
     endpoints: '/slack/events',
+    ...(overrides.logLevel ? { logLevel: overrides.logLevel } : {}),
   });
 
   const app = new App({
@@ -17,13 +19,17 @@ function createServer(config, db, overrides = {}) {
     ...(overrides.authorize
       ? { authorize: overrides.authorize }
       : { token: config.slackBotToken }),
+    ...(overrides.logLevel ? { logLevel: overrides.logLevel } : {}),
   });
 
   receiver.router.get('/healthz', async (_req, res) => {
     try {
-      await db.raw('select 1');
+      // Bounded probe: without the timeout, an unreachable-but-not-refusing DB
+      // would hang this request for knex's 60s acquire timeout, which reads as
+      // a dead service to platform healthcheckers.
+      await db.raw('select 1').timeout(2000, { cancel: true });
       res.json({ status: 'ok', db: 'up' });
-    } catch (err) {
+    } catch {
       res.status(503).json({ status: 'degraded', db: 'down' });
     }
   });

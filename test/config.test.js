@@ -44,6 +44,12 @@ describe('loadConfig', () => {
     ).toThrow(/32 bytes/);
   });
 
+  test('rejects a non-numeric or out-of-range PORT', () => {
+    expect(() => loadConfig(validEnv({ PORT: 'abc' }))).toThrow(/PORT/);
+    expect(() => loadConfig(validEnv({ PORT: '70000' }))).toThrow(/PORT/);
+    expect(loadConfig(validEnv({ PORT: '8080' })).port).toBe(8080);
+  });
+
   test('requires LinkedIn credentials only when mock mode is off', () => {
     expect(() => loadConfig(validEnv({ LINKEDIN_MOCK_MODE: 'false' }))).toThrow(
       /LINKEDIN_CLIENT_ID/
