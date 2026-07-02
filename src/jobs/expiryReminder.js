@@ -13,9 +13,11 @@ const copy = require('../copy');
 const { buildConnectUrl } = require('./../slack/connectPrompt');
 
 const REMINDER_WINDOW_DAYS = 7;
-// The DM sits in an inbox, so its reconnect link lives as long as the
-// reminder window — unlike the in-the-moment C1 link (15 min).
-const REMINDER_LINK_TTL_SECONDS = REMINDER_WINDOW_DAYS * 24 * 60 * 60;
+// The DM sits in an inbox, so its reconnect link outlives the token itself
+// (2× the reminder window) — a late reader still gets a working button,
+// unlike the in-the-moment C1 link (15 min). The token only permits binding
+// the recipient's own Slack ID, so the longer life adds no attack surface.
+const REMINDER_LINK_TTL_SECONDS = 2 * REMINDER_WINDOW_DAYS * 24 * 60 * 60;
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
 // Users with a live connection expiring inside the window who haven't been
