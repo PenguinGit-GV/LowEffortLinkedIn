@@ -9,11 +9,14 @@ const { signToken } = require('../crypto/signedToken');
 const CONNECT_LINK_TTL_SECONDS = 15 * 60;
 const CONNECT_BUTTON_ACTION_ID = 'connect_linkedin';
 
-function buildConnectUrl(config, slackUserId) {
+// The 15-minute default fits the ephemeral C1 prompt (clicked in the moment).
+// Callers whose button sits in an inbox — the Phase 6 reminder DM — pass a
+// longer TTL; the token still only lets the recipient bind THEIR OWN Slack ID.
+function buildConnectUrl(config, slackUserId, ttlSeconds = CONNECT_LINK_TTL_SECONDS) {
   const token = signToken(
     { slack_user_id: slackUserId, purpose: 'connect' },
     config.oauthStateSecret,
-    CONNECT_LINK_TTL_SECONDS
+    ttlSeconds
   );
   return `${config.publicBaseUrl}/auth/linkedin?token=${encodeURIComponent(token)}`;
 }
