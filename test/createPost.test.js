@@ -72,6 +72,29 @@ describe('parseSubmission', () => {
     expect(errors.destination_url).toMatch(/too long/);
   });
 
+  test('rejects a caption that would overflow the LinkedIn limit once the URL is appended (image posts)', () => {
+    const url = `https://example.com/${'p'.repeat(100)}`;
+    const { errors } = parseSubmission(
+      values({
+        destination_url: { value: { value: url } },
+        caption_b: { value: { value: 'y'.repeat(CAPTION_MAX - 50) } },
+        image: { value: { files: [{ id: 'F123' }] } },
+      })
+    );
+    expect(errors.caption_b).toMatch(/image/);
+  });
+
+  test('the same caption+URL combination is fine without an image', () => {
+    const url = `https://example.com/${'p'.repeat(100)}`;
+    const { errors } = parseSubmission(
+      values({
+        destination_url: { value: { value: url } },
+        caption_b: { value: { value: 'y'.repeat(CAPTION_MAX - 50) } },
+      })
+    );
+    expect(errors).toBeNull();
+  });
+
   test('rejects a caption that only overflows once mrkdwn-escaped', () => {
     // Raw length is exactly at the LinkedIn cap, but every & becomes &amp;.
     const ampersandHeavy = '&'.repeat(CAPTION_MAX);

@@ -66,6 +66,8 @@ function loadConfig(env = process.env) {
     linkedinClientId: env.LINKEDIN_CLIENT_ID || null,
     linkedinClientSecret: env.LINKEDIN_CLIENT_SECRET || null,
     linkedinRedirectUri: env.LINKEDIN_REDIRECT_URI || null,
+    // Versioned-API header (YYYYMM); override when LinkedIn sunsets the default.
+    linkedinVersion: env.LINKEDIN_API_VERSION || '202506',
     port,
     nodeEnv: env.NODE_ENV || 'development',
   };

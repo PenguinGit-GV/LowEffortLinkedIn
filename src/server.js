@@ -2,8 +2,10 @@ const { App, ExpressReceiver } = require('@slack/bolt');
 const { WebClient } = require('@slack/web-api');
 
 const { registerCreatePost } = require('./handlers/createPost');
+const { registerShareHandlers } = require('./handlers/share');
 const { registerAuthRoutes } = require('./routes/auth');
 const { registerConnectPromptAction } = require('./slack/connectPrompt');
+const { createShareClient } = require('./linkedin/posts');
 
 // Builds the Bolt app on an ExpressReceiver so the LinkedIn OAuth routes
 // and /healthz share the single HTTP server (PLAN.md §3).
@@ -41,6 +43,12 @@ function createServer(config, db, overrides = {}) {
   });
 
   registerCreatePost(app, { config, db });
+  registerShareHandlers(app, {
+    config,
+    db,
+    shareClient: overrides.shareClient || createShareClient(config),
+    ...(overrides.fetchFile ? { fetchFile: overrides.fetchFile } : {}),
+  });
   registerConnectPromptAction(app);
   registerAuthRoutes(receiver.router, {
     config,

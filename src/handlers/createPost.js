@@ -5,6 +5,7 @@
 const copy = require('../copy');
 const { buildPostCard } = require('../blocks/postCard');
 const { escapeMrkdwn } = require('../mrkdwn');
+const { postEphemeralSafely } = require('../slack/ephemeral');
 
 const MODAL_CALLBACK_ID = 'create_post_modal';
 // LinkedIn's commentary field limit (PLAN.md §2.1); enforced client-side via
@@ -118,6 +119,21 @@ function parseSubmission(values) {
 
   const imageFileId = values.image?.value?.files?.[0]?.id || null;
 
+  // With an image, the LinkedIn payload appends the URL to the commentary
+  // (§4), so caption + "\n\n" + URL must also fit the 3000-char limit.
+  if (imageFileId && destinationUrl && !errors.destination_url) {
+    for (const blockId of ['caption_a', 'caption_b', 'caption_c']) {
+      const value = text(blockId);
+      if (!value || errors[blockId]) continue;
+      const total = value.length + 2 + destinationUrl.length;
+      if (total > CAPTION_MAX) {
+        errors[blockId] =
+          `With an image attached, the link gets appended to the caption on LinkedIn — ` +
+          `together they're ${total} characters; the limit is ${CAPTION_MAX}. Please shorten this caption.`;
+      }
+    }
+  }
+
   if (Object.keys(errors).length > 0) return { parsed: null, errors };
   return {
     parsed: {
@@ -168,17 +184,6 @@ async function publishPost({ db, client, config, logger }, { parsed, userId, ori
     userId,
     copy.C9(`<#${config.advocacyChannelId}>`)
   );
-}
-
-// The confirmation is a nicety — never fail the flow over it (e.g. command
-// invoked somewhere the bot can't post ephemerally).
-async function postEphemeralSafely({ client, logger }, channel, user, text) {
-  if (!channel) return;
-  try {
-    await client.chat.postEphemeral({ channel, user, text });
-  } catch (err) {
-    logger?.warn?.(`Could not send ephemeral confirmation: ${err.data?.error || err.message}`);
-  }
 }
 
 function registerCreatePost(app, { config, db }) {
