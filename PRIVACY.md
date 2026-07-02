@@ -53,11 +53,15 @@ may later share it.
 
 - LinkedIn access tokens expire automatically 60 days after you connect (per
   LinkedIn's own token lifetime) and are not renewed without your action.
-- You can disconnect at any time by revoking the app's access from your
+- You can disconnect at any time, self-service, by running `/disconnect` in
+  Slack — this deletes your stored LinkedIn token immediately (your share
+  history is kept for the leaderboard). Run `/disconnect all` to also erase
+  your share history and every record tied to your Slack ID.
+- You can additionally revoke the app's access from your
   [LinkedIn account settings](https://www.linkedin.com/psettings/permitted-services),
   which invalidates the token on LinkedIn's side.
 - To request deletion of your stored data (Slack ID, token record, or share
-  history) from our database, contact hello@drclaw.dev.
+  history) by a human instead, contact hello@drclaw.dev.
 
 ## Third-party services
 
