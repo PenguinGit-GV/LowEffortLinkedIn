@@ -1,0 +1,15 @@
+node_modules
+.git
+.github
+.claude
+.env
+.env.*
+test
+docs
+coverage
+*.md
+LICENSE
+Dockerfile
+.dockerignore
+railway.json
+slack-app-manifest.yaml

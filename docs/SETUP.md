@@ -120,4 +120,45 @@ On the `app` service → **Variables** tab, add every variable from
 - [ ] Secrets generated fresh, nothing committed to the repo
 
 Phase 1 (project scaffold, server, migrations) can start immediately — it only
-needs the repo. The Slack URL verification and LinkedIn live test come in Phase 6.
+needs the repo. The Slack URL verification and LinkedIn live test come with the
+deploy, below.
+
+---
+
+## 6. Deploy (plan Phase 7, ~10 min)
+
+The repo ships a `Dockerfile` and `railway.json` — Railway picks both up
+automatically. Migrations run at container start (`knex migrate:latest` is
+idempotent), so there's no separate release step.
+
+1. On the Railway `app` service → **Settings** → **Source** → connect this
+   GitHub repo, branch `main`. Every merge to `main` now deploys.
+2. First deploy: watch the build logs, then hit
+   `https://<your-domain>/healthz` — you want `{"status":"ok","db":"up"}`.
+   A `db: "down"` means `DATABASE_URL` isn't set or doesn't point at the
+   Postgres service.
+3. Verify the Slack request URL: [api.slack.com/apps](https://api.slack.com/apps)
+   → your app → **Interactivity & Shortcuts** → re-save the (already-correct)
+   request URL — Slack pings the live endpoint and should show a green
+   "Verified". Do the same check under **Slash Commands** if prompted.
+4. LinkedIn: confirm the redirect URL on the app's **Auth** tab matches
+   `https://<your-domain>/auth/linkedin/callback` exactly.
+5. Smoke test in Slack, still in mock mode (`LINKEDIN_MOCK_MODE=true` — shares
+   are simulated, nothing posts to LinkedIn):
+   - `/create-post` as the marketer → card appears with buttons + `✅ 0 shares`.
+   - Click a Share button → connect prompt → complete the (mocked) connect flow
+     → share succeeds, counter ticks to 1.
+   - `/advocacy-stats` and `/disconnect` respond.
+6. Go live: once both LinkedIn products show **Added**, set
+   `LINKEDIN_MOCK_MODE=false` on the Railway service (it redeploys), reconnect
+   with a real LinkedIn account, and run the full manual QA checklist in
+   [PLAN.md §12](PLAN.md#12-testing-strategy) — starting with sharing a real
+   post to a test profile.
+
+## Done — deploy exit criteria
+
+- [ ] `main` connected to Railway; deploys green; `/healthz` reports `db: up`
+- [ ] Slack request URL verified against the live server
+- [ ] Mock-mode smoke test passed end to end in the real workspace
+- [ ] `LINKEDIN_MOCK_MODE=false` flipped after product approval; a real share
+      landed on a test LinkedIn profile
