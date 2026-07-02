@@ -24,8 +24,8 @@ the author as a reasonable default and called out inline where it matters.
 | 7 | Token expiry handling | Proactive Slack reminder ~7 days before `token_expires_at` | LinkedIn tokens aren't refreshable in this flow; without a reminder, the Share button just silently breaks after 60 days. |
 | 8 | This task's deliverable | This plan document only — no application code yet | Matches the branch intent; implementation begins once this plan is reviewed. |
 
-Two things worth flagging explicitly rather than silently resolving — see [§14 Open
-Questions](#14-open-questions-for-follow-up).
+A few things are flagged explicitly rather than silently resolved — see [§13 Open
+Questions](#13-open-questions-for-follow-up).
 
 ## 2. Feature Requirements
 
@@ -49,8 +49,8 @@ Questions](#14-open-questions-for-follow-up).
 
 **Submission handling**
 - `view_submission` → `INSERT INTO posts (...) RETURNING id`.
-- Post a Block Kit card to `ADVOCACY_CHANNEL_ID` (configurable — see §14.1 on the
-  original spec's hardcoded `#sales`):
+- Post a Block Kit card to `ADVOCACY_CHANNEL_ID` (configurable, rather than the
+  original brief's hardcoded `#sales` channel):
   - A text block containing the raw destination URL so Slack's native unfurl renders
     the link preview.
   - Section blocks for each non-empty caption variation.
@@ -79,20 +79,31 @@ the first; the other two are necessary for correctness):
 **Handshake**
 1. Any trigger above → `chat.postEphemeral` **in the channel where the user clicked**
    (visible only to them). This satisfies the "ephemeral DM" intent from the spec
-   without needing `im:write`/`conversations.open` for a real DM channel — simpler,
-   same effective privacy.
-2. The message contains a Block Kit `url`-type button pointing directly to
-   `${PUBLIC_BASE_URL}/auth/linkedin?slack_id=${user_id}` (opens in the user's
-   browser, no server round trip needed to build it).
-3. `GET /auth/linkedin`: build a signed, short-lived `state`
-   (HMAC-SHA256 over `{slack_id, nonce, iat}` using `OAUTH_STATE_SECRET`, ~10 min
-   expiry), redirect to LinkedIn's authorization endpoint with
-   `scope=openid profile w_member_social`.
-4. `GET /auth/linkedin/callback`: verify `state` signature and expiry (reject
-   tampered/expired state with a friendly error page — this is the CSRF defense),
-   exchange the `code` for an access token, call LinkedIn's OIDC userinfo endpoint
-   to get the person's URN id (`sub` claim), encrypt the access token
-   (AES-256-GCM, see §5), and `UPSERT` into `users`.
+   without opening a real DM channel for this prompt (the Phase 5 expiry reminder
+   does DM users — that's why `im:write` appears in §6).
+2. The message contains a Block Kit `url`-type button pointing to
+   `${PUBLIC_BASE_URL}/auth/linkedin?token=${signed_slack_id}`. The server is
+   already building this ephemeral message in response to a signature-verified
+   Slack interaction, so at that moment it signs the `slack_id` (HMAC-SHA256 with
+   `OAUTH_STATE_SECRET`, ~15 min expiry) into the link. A raw
+   `?slack_id=` param would let anyone who knows a coworker's Slack ID bind their
+   own LinkedIn account to it — the victim's future "shares" would then land on
+   the attacker's profile — so `/auth/linkedin` rejects requests without a valid
+   signed token.
+3. `GET /auth/linkedin`: verify the signed `slack_id` token, then build a signed,
+   short-lived `state` (HMAC-SHA256 over `{slack_id, nonce, iat}` using
+   `OAUTH_STATE_SECRET`, ~10 min expiry), and redirect to LinkedIn's authorization
+   endpoint with `scope=openid profile w_member_social`.
+4. `GET /auth/linkedin/callback`:
+   - If LinkedIn sent an `error` param (e.g. `user_cancelled_authorize` when the
+     user clicks Cancel on the consent screen), render a friendly "Connection
+     cancelled — you can retry from Slack" page and stop.
+   - Verify `state` signature and expiry (reject tampered/expired state with a
+     friendly error page — this is the CSRF defense), exchange the `code` for an
+     access token, call LinkedIn's OIDC userinfo endpoint to get the person's URN
+     id (`sub` claim), encrypt the access token (AES-256-GCM, see §5), and
+     `UPSERT` into `users` — also clearing `expiry_reminder_sent_at`, so the
+     reminder job treats the fresh token as a new 60-day window.
 5. Render a static "Success! You can close this tab and return to Slack" page. As a
    bonus over the spec: since the server already knows the `slack_id` at this point,
    also fire a Slack confirmation message proactively so the user doesn't have to
@@ -104,18 +115,31 @@ the first; the other two are necessary for correctness):
 are populated.
 
 **Instant share (`Share Variation A/B/C`)**
+0. `ack()` the interaction immediately — Slack requires an ack within 3 seconds
+   and does **not** retry interactive payloads (the user just sees a warning
+   icon if we're late). The LinkedIn call can easily exceed 3s, so every
+   `block_actions` and `view_submission` handler acks first, then does the real
+   work async. This applies to `/create-post` submission (§2.1) too.
 1. Look up the clicking user's token. Missing/expired → run the connect flow
    (§2.2) and stop.
-2. Idempotency guard: a short-lived lock keyed on `(post_id, slack_user_id)` so a
-   double-click (or a slow LinkedIn response retried by Slack's 3s ack timeout)
-   can't produce two LinkedIn posts. Not in the original spec, but necessary —
-   a duplicate post is a visible, embarrassing failure on someone's real profile.
+2. Idempotency guard, two layers. Not in the original spec, but necessary — a
+   duplicate post is a visible, embarrassing failure on someone's real profile:
+   - An in-process lock keyed on `(post_id, slack_user_id)` absorbs double-clicks.
+   - A partial unique index on `shares (post_id, slack_user_id) WHERE
+     status = 'success'` (§5) is the durable backstop: one successful share per
+     person per post, surviving restarts. Default policy is that sharing the same
+     post twice — even a different variation — is blocked, with an ephemeral
+     "You've already shared this post" message; see §13.4 if re-sharing should
+     be allowed.
 3. Build the LinkedIn Posts API payload (see §4), POST it (or simulate, under
    `LINKEDIN_MOCK_MODE`).
 4. Insert a `shares` row recording the outcome.
-5. Success → `reactions.add` (✅) on the original card message, or an ephemeral
-   confirmation. Failure → ephemeral message with LinkedIn's error surfaced
-   verbatim, so the employee (or marketer, later) knows what happened.
+5. Success → ephemeral confirmation (*"Successfully shared to your LinkedIn!"*)
+   as the primary feedback. The ✅ `reactions.add` on the card is a nice-to-have
+   on the **first** successful share only: the bot can add a given emoji to a
+   message just once, so subsequent sharers would get an `already_reacted` error
+   — swallow it silently. Failure → ephemeral message with LinkedIn's error
+   surfaced verbatim, so the employee (or marketer, later) knows what happened.
 
 **Edit & Share Custom**
 - Opens a modal pre-filled with Caption A via `initial_value`, `post_id` carried in
@@ -177,14 +201,16 @@ cron job (Railway cron or `node-cron` in-process) runs the token-expiry reminder
 ## 5. Database Schema
 
 ```sql
-CREATE EXTENSION IF NOT EXISTS pgcrypto;
+-- gen_random_uuid() is built into PostgreSQL 13+; no extension needed.
+-- Token encryption is done in the app (AES-256-GCM), not in the database.
 
 CREATE TABLE users (
   slack_user_id           TEXT PRIMARY KEY,
-  linkedin_access_token    TEXT,            -- AES-256-GCM encrypted, base64
+  linkedin_access_token    TEXT,            -- AES-256-GCM encrypted in app, base64
   linkedin_person_id       TEXT,
   token_expires_at         TIMESTAMPTZ,
-  expiry_reminder_sent_at  TIMESTAMPTZ,      -- added: dedupes the §2.2 reminder job
+  expiry_reminder_sent_at  TIMESTAMPTZ,      -- dedupes the reminder job; cleared on
+                                             -- reconnect (§2.2 step 4)
   created_at               TIMESTAMPTZ NOT NULL DEFAULT now(),
   updated_at               TIMESTAMPTZ NOT NULL DEFAULT now()
 );
@@ -214,6 +240,10 @@ CREATE TABLE shares (
 
 CREATE INDEX idx_shares_post_id ON shares(post_id);
 CREATE INDEX idx_shares_slack_user_id ON shares(slack_user_id);
+
+-- Durable idempotency backstop: one successful share per person per post (§2.3).
+CREATE UNIQUE INDEX idx_shares_once_per_user_post
+  ON shares(post_id, slack_user_id) WHERE status = 'success';
 ```
 
 Migrations managed via Knex.js (lightweight query builder + migration runner —
@@ -222,7 +252,8 @@ enough structure for a 3-table schema without ORM overhead).
 ## 6. Slack App Configuration
 
 - **Bot token scopes:** `commands`, `chat:write`, `chat:write.public`,
-  `reactions:write`.
+  `reactions:write`, `im:write` (required by the Phase 5 expiry-reminder DMs —
+  the in-channel ephemeral prompts don't need it, but DMing a user does).
 - **Slash Commands:** `/create-post` → Request URL `${PUBLIC_BASE_URL}/slack/events`.
 - **Interactivity & Shortcuts:** on, same Request URL.
 - **Socket Mode:** not used — we already need a public HTTPS endpoint for the
@@ -241,7 +272,7 @@ enough structure for a 3-table schema without ORM overhead).
 | `DATABASE_URL` | Postgres connection string (Railway-provided) |
 | `LINKEDIN_CLIENT_ID` / `LINKEDIN_CLIENT_SECRET` | LinkedIn app credentials |
 | `LINKEDIN_REDIRECT_URI` | Must exactly match the LinkedIn app's registered redirect |
-| `OAUTH_STATE_SECRET` | HMAC key for signing the OAuth `state` param |
+| `OAUTH_STATE_SECRET` | HMAC key for signing the OAuth `state` param and connect-link tokens |
 | `TOKEN_ENCRYPTION_KEY` | 32-byte base64 key for AES-256-GCM token encryption at rest |
 | `PUBLIC_BASE_URL` | This server's public HTTPS origin |
 | `LINKEDIN_MOCK_MODE` | `true` until LinkedIn API access is approved (§9, Phase 0) |
@@ -249,6 +280,9 @@ enough structure for a 3-table schema without ORM overhead).
 
 ## 8. Security & Edge Cases
 
+- The connect link itself carries a signed `slack_id` token, only ever minted in
+  response to a signature-verified Slack interaction — `/auth/linkedin` cannot be
+  used to initiate a binding flow for an arbitrary Slack user (§2.2 step 2).
 - OAuth `state` is signed and short-lived — defends the callback route against CSRF
   and replay.
 - LinkedIn access tokens are encrypted at rest (AES-256-GCM); the encryption key
@@ -257,8 +291,11 @@ enough structure for a 3-table schema without ORM overhead).
   not just hidden from the Slack UI.
 - Slack request signatures are verified by Bolt automatically via
   `SLACK_SIGNING_SECRET`.
-- Share actions are debounced per `(post_id, slack_user_id)` to prevent duplicate
-  LinkedIn posts from double-clicks.
+- Share actions are debounced per `(post_id, slack_user_id)` in-process, with a
+  partial unique index as the durable backstop (§2.3), to prevent duplicate
+  LinkedIn posts.
+- All interactive payloads are `ack()`ed within Slack's 3-second window before any
+  LinkedIn/database work runs (§2.3 step 0).
 - Raw tokens and full LinkedIn payloads are never logged.
 - Server fails fast at startup if `MARKETER_SLACK_IDS` is empty/unset, rather than
   silently locking everyone out or (worse) leaving the command unrestricted.
@@ -310,8 +347,9 @@ enough structure for a 3-table schema without ORM overhead).
 
 **Phase 5 — Token Expiry Reminder**
 - Daily job: query `users` where `token_expires_at` is within 7 days and
-  `expiry_reminder_sent_at` hasn't already covered this window; DM a reconnect
-  button; stamp `expiry_reminder_sent_at`.
+  `expiry_reminder_sent_at` is null or predates the current token's reminder
+  window (it's cleared on reconnect, §2.2 step 4); DM a reconnect button
+  (needs `im:write`, §6); stamp `expiry_reminder_sent_at`.
 
 **Phase 6 — Deploy**
 - Dockerfile/nixpacks build on Railway; configure env vars.
@@ -319,23 +357,26 @@ enough structure for a 3-table schema without ORM overhead).
   Railway public domain.
 - End-to-end smoke test in the real workspace with a real LinkedIn test account.
 
-**Phase 7 — Deferred** (see §13)
+**Phase 7 — Deferred** (see §12)
 
 ## 11. Testing Strategy
 
-- **Unit (Jest):** state param sign/verify (valid, tampered, expired); token
-  encrypt/decrypt round-trip; LinkedIn payload builder; marketer-allowlist check.
+- **Unit (Jest):** state param and connect-link token sign/verify (valid, tampered,
+  expired); token encrypt/decrypt round-trip; LinkedIn payload builder;
+  marketer-allowlist check.
 - **Route-level (supertest):** `/auth/linkedin` redirect status + `Location` header;
   `/healthz`.
 - **Manual QA checklist** (full Slack+LinkedIn e2e needs live accounts, not
   automatable cheaply):
   1. `/create-post` → card appears with the right buttons for the captions filled in.
   2. Connect flow end-to-end with a real personal LinkedIn test account.
-  3. `Share Variation A` → post appears on LinkedIn; ✅ reaction appears in Slack.
+  3. `Share Variation A` → post appears on LinkedIn; ephemeral confirmation in
+     Slack (plus ✅ reaction if this was the card's first share).
   4. Click Share while disconnected → connect prompt appears.
   5. `Edit & Share Custom` → edited text is what's posted.
   6. Rapid double-click on Share → only one LinkedIn post is created.
-  7. Force an expired `token_expires_at` → reminder DM fires.
+  7. Share a post already shared earlier → blocked with "already shared" message.
+  8. Force an expired `token_expires_at` → reminder DM fires.
 
 ## 12. Out of Scope / Future Enhancements
 
@@ -347,6 +388,10 @@ enough structure for a 3-table schema without ORM overhead).
 - Multi-workspace distribution.
 - Posting to LinkedIn Company Pages (`w_organization_social` — a different,
   harder-to-get product from the personal-profile `w_member_social` this plan uses).
+- A self-service `/disconnect` command that deletes a user's token and stored data.
+  PRIVACY.md promises deletion on request; for the MVP that's handled manually
+  (delete the `users` row + `shares` history on email request), which is fine at
+  internal-tool scale but should become self-service if usage grows.
 
 ## 13. Open Questions for Follow-up
 
@@ -362,3 +407,8 @@ enough structure for a 3-table schema without ORM overhead).
 3. **Marketer visibility into share activity:** should the marketer get a rollup
    ("12 people shared this so far") in-channel or via DM? Currently deferred to
    §12 Future Enhancements — say so if you want it pulled into the MVP.
+4. **Re-share policy:** the plan's default (§2.3) is one successful share per
+   person per post, enforced by a unique index — clicking Share again, even on a
+   different variation, is blocked with an "already shared" message. Flag if
+   employees should instead be allowed to share a second variation of the same
+   post later.
