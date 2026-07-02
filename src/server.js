@@ -2,7 +2,9 @@ const { App, ExpressReceiver } = require('@slack/bolt');
 const { WebClient } = require('@slack/web-api');
 
 const { registerCreatePost } = require('./handlers/createPost');
+const { registerDisconnect } = require('./handlers/disconnect');
 const { registerShareHandlers } = require('./handlers/share');
+const { registerStats } = require('./handlers/stats');
 const { registerAuthRoutes } = require('./routes/auth');
 const { registerConnectPromptAction } = require('./slack/connectPrompt');
 const { createShareClient } = require('./linkedin/posts');
@@ -49,6 +51,8 @@ function createServer(config, db, overrides = {}) {
     shareClient: overrides.shareClient || createShareClient(config),
     ...(overrides.fetchFile ? { fetchFile: overrides.fetchFile } : {}),
   });
+  registerDisconnect(app, { db });
+  registerStats(app, { db });
   registerConnectPromptAction(app);
   registerAuthRoutes(receiver.router, {
     config,
