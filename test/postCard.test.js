@@ -71,4 +71,21 @@ describe('buildPostCard', () => {
       expect(section.text.text.length).toBeLessThanOrEqual(3000);
     }
   });
+
+  test('escapes mrkdwn control characters in captions and the URL', () => {
+    const blocks = buildPostCard({
+      post: post({
+        caption_a: 'Ping <!channel> & follow <https://evil|this>',
+        destination_url: 'https://example.com/?a=1&b=2',
+      }),
+      shareCount: 0,
+    });
+    const texts = blocks
+      .filter((b) => b.type === 'section')
+      .map((b) => b.text.text)
+      .join('\n');
+    expect(texts).not.toContain('<!channel>');
+    expect(texts).toContain('&lt;!channel&gt;');
+    expect(texts).toContain('https://example.com/?a=1&amp;b=2');
+  });
 });

@@ -1,4 +1,11 @@
-const { parseSubmission, publishPost, buildModal, CAPTION_MAX } = require('../src/handlers/createPost');
+const {
+  parseSubmission,
+  publishPost,
+  buildModal,
+  registerCreatePost,
+  CAPTION_MAX,
+  URL_MAX,
+} = require('../src/handlers/createPost');
 
 function values(overrides = {}) {
   return {
@@ -57,6 +64,99 @@ describe('parseSubmission', () => {
       values({ caption_b: { value: { value: 'x'.repeat(CAPTION_MAX + 1) } } })
     );
     expect(errors.caption_b).toMatch(/3000/);
+  });
+
+  test('rejects a URL too long for the card section', () => {
+    const longUrl = `https://example.com/${'a'.repeat(URL_MAX)}`;
+    const { errors } = parseSubmission(values({ destination_url: { value: { value: longUrl } } }));
+    expect(errors.destination_url).toMatch(/too long/);
+  });
+
+  test('rejects a caption that only overflows once mrkdwn-escaped', () => {
+    // Raw length is exactly at the LinkedIn cap, but every & becomes &amp;.
+    const ampersandHeavy = '&'.repeat(CAPTION_MAX);
+    const { errors } = parseSubmission(
+      values({ caption_a: { value: { value: ampersandHeavy } } })
+    );
+    expect(errors.caption_a).toMatch(/special characters/);
+  });
+});
+
+describe('view handler glue', () => {
+  function register() {
+    const handlers = {};
+    const app = {
+      command: jest.fn((name, fn) => (handlers.command = fn)),
+      view: jest.fn((id, fn) => (handlers.view = fn)),
+    };
+    const db = (table) => ({
+      insert: () => ({ returning: async () => [{ id: 'post-uuid-1' }] }),
+      where: () => ({ update: async () => 1, del: async () => 1 }),
+    });
+    const config = { advocacyChannelId: 'C_ADVOCACY', marketerSlackIds: ['U_MARKETER'] };
+    registerCreatePost(app, { config, db });
+    return { handlers, config };
+  }
+
+  test('acks with field errors for an invalid submission', async () => {
+    const { handlers } = register();
+    const ack = jest.fn();
+    await handlers.view({
+      ack,
+      body: { user: { id: 'U_MARKETER' } },
+      view: {
+        private_metadata: JSON.stringify({ channel_id: 'C_ORIGIN' }),
+        state: { values: values({ destination_url: { value: { value: 'nope' } } }) },
+      },
+      client: { chat: {} },
+      logger: { error: jest.fn(), warn: jest.fn() },
+    });
+    expect(ack).toHaveBeenCalledWith({
+      response_action: 'errors',
+      errors: expect.objectContaining({ destination_url: expect.stringMatching(/valid URL/) }),
+    });
+  });
+
+  test('acks cleanly and publishes for a valid submission', async () => {
+    const { handlers } = register();
+    const ack = jest.fn();
+    const client = {
+      chat: {
+        postMessage: jest.fn().mockResolvedValue({ channel: 'C_ADVOCACY', ts: '9.9' }),
+        postEphemeral: jest.fn().mockResolvedValue({}),
+      },
+    };
+    await handlers.view({
+      ack,
+      body: { user: { id: 'U_MARKETER' } },
+      view: {
+        private_metadata: JSON.stringify({ channel_id: 'C_ORIGIN' }),
+        state: { values: values() },
+      },
+      client,
+      logger: { error: jest.fn(), warn: jest.fn() },
+    });
+    expect(ack).toHaveBeenCalledWith();
+    expect(client.chat.postMessage).toHaveBeenCalled();
+  });
+
+  test('rejects non-marketers at the command with C10', async () => {
+    const { handlers } = register();
+    const ack = jest.fn();
+    const respond = jest.fn();
+    const client = { views: { open: jest.fn() } };
+    await handlers.command({
+      ack,
+      respond,
+      client,
+      logger: { error: jest.fn() },
+      command: { user_id: 'U_RANDO', channel_id: 'C_ORIGIN', trigger_id: 't' },
+    });
+    expect(ack).toHaveBeenCalled();
+    expect(respond).toHaveBeenCalledWith(
+      expect.objectContaining({ response_type: 'ephemeral', text: expect.stringContaining('🚫') })
+    );
+    expect(client.views.open).not.toHaveBeenCalled();
   });
 });
 

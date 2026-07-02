@@ -2,6 +2,8 @@
 // Rebuilt (with a fresh shareCount) by the Phase 4 counter update, so this is
 // the single source of truth for the card's layout.
 
+const { escapeMrkdwn } = require('../mrkdwn');
+
 const VARIATION_LABELS = ['A', 'B', 'C'];
 
 function captionsOf(post) {
@@ -16,7 +18,7 @@ function buildPostCard({ post, shareCount }) {
       type: 'section',
       text: {
         type: 'mrkdwn',
-        text: `📣 *New post ready to share!*\n${post.destination_url}`,
+        text: `📣 *New post ready to share!*\n${escapeMrkdwn(post.destination_url)}`,
       },
     },
   ];
@@ -37,7 +39,7 @@ function buildPostCard({ post, shareCount }) {
       type: 'context',
       elements: [{ type: 'mrkdwn', text: `*Variation ${label}*` }],
     });
-    blocks.push({ type: 'section', text: { type: 'mrkdwn', text } });
+    blocks.push({ type: 'section', text: { type: 'mrkdwn', text: escapeMrkdwn(text) } });
   }
 
   const buttons = captions.map(([label]) => ({

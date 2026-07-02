@@ -4,11 +4,18 @@
 
 const copy = require('../copy');
 const { buildPostCard } = require('../blocks/postCard');
+const { escapeMrkdwn } = require('../mrkdwn');
 
 const MODAL_CALLBACK_ID = 'create_post_modal';
 // LinkedIn's commentary field limit (PLAN.md §2.1); enforced client-side via
 // max_length and re-checked server-side on submit.
 const CAPTION_MAX = 3000;
+// The card renders the URL inside a section block (3000-char mrkdwn limit)
+// behind a ~32-char prefix, and escaping can grow the text further — bound the
+// input well below that.
+const URL_MAX = 2500;
+const SECTION_TEXT_MAX = 3000;
+const URL_SECTION_BUDGET = 2900;
 
 function buildModal({ channelId }) {
   const captionInput = (blockId, label, optional) => ({
@@ -39,6 +46,7 @@ function buildModal({ channelId }) {
         element: {
           type: 'plain_text_input',
           action_id: 'value',
+          max_length: URL_MAX,
           placeholder: { type: 'plain_text', text: 'https://…' },
         },
       },
@@ -83,6 +91,12 @@ function parseSubmission(values) {
     if (parsedUrl && !['http:', 'https:'].includes(parsedUrl.protocol)) {
       errors.destination_url = 'The URL must start with http:// or https://.';
     }
+    if (
+      !errors.destination_url &&
+      (destinationUrl.length > URL_MAX || escapeMrkdwn(destinationUrl).length > URL_SECTION_BUDGET)
+    ) {
+      errors.destination_url = `This URL is too long to display in Slack (keep it under ${URL_MAX} characters).`;
+    }
   }
 
   const captionA = text('caption_a');
@@ -91,8 +105,14 @@ function parseSubmission(values) {
   }
   for (const blockId of ['caption_a', 'caption_b', 'caption_c']) {
     const value = text(blockId);
-    if (value && value.length > CAPTION_MAX) {
+    if (!value) continue;
+    if (value.length > CAPTION_MAX) {
       errors[blockId] = `Captions can be at most ${CAPTION_MAX} characters (LinkedIn's limit).`;
+    } else if (escapeMrkdwn(value).length > SECTION_TEXT_MAX) {
+      // &, <, > are encoded for display, so a caption near the limit that's
+      // heavy on those characters can overflow Slack's section block.
+      errors[blockId] =
+        'This caption is too long to display in Slack once special characters (&, <, >) are encoded — please trim it slightly.';
     }
   }
 
@@ -217,4 +237,11 @@ function registerCreatePost(app, { config, db }) {
   });
 }
 
-module.exports = { registerCreatePost, buildModal, parseSubmission, publishPost, CAPTION_MAX };
+module.exports = {
+  registerCreatePost,
+  buildModal,
+  parseSubmission,
+  publishPost,
+  CAPTION_MAX,
+  URL_MAX,
+};
