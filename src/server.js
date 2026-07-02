@@ -1,5 +1,7 @@
 const { App, ExpressReceiver } = require('@slack/bolt');
 
+const { registerCreatePost } = require('./handlers/createPost');
+
 // Builds the Bolt app on an ExpressReceiver so the LinkedIn OAuth routes
 // (Phase 3) and /healthz share the single HTTP server (PLAN.md §3).
 // Slack handlers (Phase 2/4/5) and auth routes (Phase 3) register here.
@@ -32,6 +34,12 @@ function createServer(config, db, overrides = {}) {
     } catch {
       res.status(503).json({ status: 'degraded', db: 'down' });
     }
+  });
+
+  registerCreatePost(app, { config, db });
+
+  app.error(async (err) => {
+    console.error('Unhandled handler error:', err);
   });
 
   return { app, receiver };

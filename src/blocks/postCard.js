@@ -1,0 +1,75 @@
+// Block Kit card broadcast to the advocacy channel — PLAN.md §2.1.
+// Rebuilt (with a fresh shareCount) by the Phase 4 counter update, so this is
+// the single source of truth for the card's layout.
+
+const VARIATION_LABELS = ['A', 'B', 'C'];
+
+function captionsOf(post) {
+  return VARIATION_LABELS.map((label) => [label, post[`caption_${label.toLowerCase()}`]]).filter(
+    ([, text]) => text && text.trim()
+  );
+}
+
+function buildPostCard({ post, shareCount }) {
+  const blocks = [
+    {
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: `📣 *New post ready to share!*\n${post.destination_url}`,
+      },
+    },
+  ];
+
+  if (post.image_slack_file_id) {
+    blocks.push({
+      type: 'image',
+      slack_file: { id: post.image_slack_file_id },
+      alt_text: 'Post image',
+    });
+  }
+
+  const captions = captionsOf(post);
+  for (const [label, text] of captions) {
+    // Label lives in its own context block: a 3000-char caption plus a label
+    // would overflow a section block's 3000-char text limit.
+    blocks.push({
+      type: 'context',
+      elements: [{ type: 'mrkdwn', text: `*Variation ${label}*` }],
+    });
+    blocks.push({ type: 'section', text: { type: 'mrkdwn', text } });
+  }
+
+  const buttons = captions.map(([label]) => ({
+    type: 'button',
+    text: { type: 'plain_text', text: `Share Variation ${label}` },
+    action_id: `share_variation_${label.toLowerCase()}`,
+    value: JSON.stringify({ post_id: post.id, variation: label }),
+  }));
+  buttons.push({
+    type: 'button',
+    text: { type: 'plain_text', text: 'Edit & Share Custom' },
+    action_id: 'edit_share_custom',
+    value: JSON.stringify({ post_id: post.id }),
+  });
+  blocks.push({ type: 'actions', elements: buttons });
+
+  const createdAt = post.created_at ? new Date(post.created_at) : new Date();
+  const unix = Math.floor(createdAt.getTime() / 1000);
+  const isoDay = createdAt.toISOString().slice(0, 10);
+  blocks.push({
+    type: 'context',
+    elements: [
+      {
+        type: 'mrkdwn',
+        text:
+          `Posted by <@${post.created_by_slack_id}> · ` +
+          `<!date^${unix}^{date_short}|${isoDay}> · ✅ ${shareCount} shares`,
+      },
+    ],
+  });
+
+  return blocks;
+}
+
+module.exports = { buildPostCard };

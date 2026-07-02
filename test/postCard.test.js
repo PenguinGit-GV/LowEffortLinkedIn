@@ -1,0 +1,74 @@
+const { buildPostCard } = require('../src/blocks/postCard');
+
+function post(overrides = {}) {
+  return {
+    id: 'post-1',
+    destination_url: 'https://example.com/launch',
+    caption_a: 'Caption A text',
+    caption_b: null,
+    caption_c: null,
+    image_slack_file_id: null,
+    created_by_slack_id: 'U_MARKETER',
+    created_at: '2026-07-02T12:00:00Z',
+    ...overrides,
+  };
+}
+
+function actionIds(blocks) {
+  const actions = blocks.find((b) => b.type === 'actions');
+  return actions.elements.map((e) => e.action_id);
+}
+
+describe('buildPostCard', () => {
+  test('renders share buttons only for filled-in captions, plus custom edit', () => {
+    const blocks = buildPostCard({ post: post(), shareCount: 0 });
+    expect(actionIds(blocks)).toEqual(['share_variation_a', 'edit_share_custom']);
+  });
+
+  test('renders all three share buttons when B and C are filled', () => {
+    const blocks = buildPostCard({
+      post: post({ caption_b: 'B text', caption_c: 'C text' }),
+      shareCount: 0,
+    });
+    expect(actionIds(blocks)).toEqual([
+      'share_variation_a',
+      'share_variation_b',
+      'share_variation_c',
+      'edit_share_custom',
+    ]);
+  });
+
+  test('buttons carry post_id and variation in their value', () => {
+    const blocks = buildPostCard({ post: post({ caption_b: 'B' }), shareCount: 0 });
+    const actions = blocks.find((b) => b.type === 'actions');
+    expect(JSON.parse(actions.elements[0].value)).toEqual({ post_id: 'post-1', variation: 'A' });
+    expect(JSON.parse(actions.elements[1].value)).toEqual({ post_id: 'post-1', variation: 'B' });
+    expect(JSON.parse(actions.elements[2].value)).toEqual({ post_id: 'post-1' });
+  });
+
+  test('includes an image block only when the post has an image', () => {
+    const without = buildPostCard({ post: post(), shareCount: 0 });
+    expect(without.some((b) => b.type === 'image')).toBe(false);
+
+    const withImage = buildPostCard({ post: post({ image_slack_file_id: 'F123' }), shareCount: 0 });
+    const image = withImage.find((b) => b.type === 'image');
+    expect(image.slack_file).toEqual({ id: 'F123' });
+  });
+
+  test('context line shows the marketer and the share count', () => {
+    const blocks = buildPostCard({ post: post(), shareCount: 12 });
+    const context = blocks[blocks.length - 1];
+    expect(context.type).toBe('context');
+    expect(context.elements[0].text).toContain('<@U_MARKETER>');
+    expect(context.elements[0].text).toContain('✅ 12 shares');
+  });
+
+  test('a full 3000-char caption stays within the section block limit', () => {
+    const long = 'x'.repeat(3000);
+    const blocks = buildPostCard({ post: post({ caption_a: long }), shareCount: 0 });
+    const sections = blocks.filter((b) => b.type === 'section');
+    for (const section of sections) {
+      expect(section.text.text.length).toBeLessThanOrEqual(3000);
+    }
+  });
+});
