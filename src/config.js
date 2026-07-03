@@ -30,6 +30,18 @@ function loadConfig(env = process.env) {
     req('LINKEDIN_REDIRECT_URI');
   }
 
+  // Admin config UI (plans/env-var-ui-feature-spec.md) is opt-in: these are
+  // new bootstrap secrets (they gate the admin UI itself, same class of
+  // problem as SLACK_SIGNING_SECRET) that most deployments won't have set up
+  // yet. Gating on a flag, mirroring the LINKEDIN_MOCK_MODE pattern above,
+  // keeps every existing deployment and test config working unchanged.
+  const adminUiEnabled = (env.ADMIN_UI_ENABLED || '').toLowerCase() === 'true';
+  if (adminUiEnabled) {
+    req('SLACK_CLIENT_ID');
+    req('SLACK_CLIENT_SECRET');
+    req('ADMIN_SESSION_SECRET');
+  }
+
   if (missing.length > 0) {
     throw new Error(
       `Missing required environment variables: ${missing.join(', ')}` +
@@ -102,6 +114,10 @@ function loadConfig(env = process.env) {
     postExpiryCron: env.POST_EXPIRY_CRON || '*/15 * * * *',
     port,
     nodeEnv: env.NODE_ENV || 'development',
+    adminUiEnabled,
+    slackClientId: env.SLACK_CLIENT_ID || null,
+    slackClientSecret: env.SLACK_CLIENT_SECRET || null,
+    adminSessionSecret: env.ADMIN_SESSION_SECRET || null,
   };
 }
 

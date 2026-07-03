@@ -8,6 +8,8 @@ const { registerStats } = require('./handlers/stats');
 const { registerAuthRoutes } = require('./routes/auth');
 const { registerConnectPromptAction } = require('./slack/connectPrompt');
 const { createShareClient } = require('./linkedin/posts');
+const { registerAdminAuthRoutes } = require('./admin/auth');
+const { registerAdminApi } = require('./admin/api');
 
 // Builds the Bolt app on an ExpressReceiver so the LinkedIn OAuth routes
 // and /healthz share the single HTTP server (PLAN.md §3).
@@ -73,6 +75,21 @@ function createServer(config, db, overrides = {}) {
     linkedin: overrides.linkedin,
     ...(overrides.logger ? { logger: overrides.logger } : {}),
   });
+
+  // Feature-flagged (plans/env-var-ui-feature-spec.md): most deployments
+  // haven't set up the Sign-in-with-Slack app credentials this needs yet.
+  if (config.adminUiEnabled) {
+    registerAdminAuthRoutes(receiver.router, {
+      config,
+      openId: overrides.adminOpenId,
+      ...(overrides.logger ? { logger: overrides.logger } : {}),
+    });
+    registerAdminApi(receiver.router, {
+      config,
+      db,
+      ...(overrides.logger ? { logger: overrides.logger } : {}),
+    });
+  }
 
   app.error(async (err) => {
     console.error('Unhandled handler error:', err);
