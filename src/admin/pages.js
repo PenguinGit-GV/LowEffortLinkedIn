@@ -98,6 +98,12 @@ const STYLE = `
     background: #fff0f0; color: #a30000; border-radius: 11px;
     padding: 12px 16px; margin-bottom: 16px; display: none;
   }
+  .info-banner {
+    background: var(--parchment); color: var(--ink); border-radius: 11px;
+    padding: 12px 16px; margin-bottom: 16px; display: none;
+  }
+  .badge-ok { background: rgba(0,102,204,0.12); color: var(--primary); }
+  .badge-bad { background: #fff0f0; color: #a30000; }
 `;
 
 // Plain-quoted, no template literals inside — this string is itself built
@@ -119,10 +125,19 @@ const CLIENT_SCRIPT = `
     banner.style.display = 'block';
   }
 
+  function showInfo(message) {
+    var banner = document.getElementById('info-banner');
+    banner.textContent = message;
+    banner.style.display = 'block';
+  }
+
   function clearError() {
-    var banner = document.getElementById('error-banner');
-    banner.style.display = 'none';
-    banner.textContent = '';
+    var errorBanner = document.getElementById('error-banner');
+    errorBanner.style.display = 'none';
+    errorBanner.textContent = '';
+    var infoBanner = document.getElementById('info-banner');
+    infoBanner.style.display = 'none';
+    infoBanner.textContent = '';
   }
 
   function api(path, options) {
@@ -291,11 +306,46 @@ const CLIENT_SCRIPT = `
     });
   }
 
+  function statusBadgeClass(status) {
+    return status === 'up' || status === 'configured' || status === 'mock' ? 'badge-ok' : 'badge-bad';
+  }
+
+  function loadHealth() {
+    return api('/admin/api/health').then(function (body) {
+      var container = document.getElementById('health-status');
+      container.innerHTML = '';
+      ['db', 'slack', 'linkedin'].forEach(function (key) {
+        var pill = el('span', { className: 'badge ' + statusBadgeClass(body[key]), text: key + ': ' + body[key] });
+        pill.style.marginRight = '8px';
+        container.appendChild(pill);
+      });
+    });
+  }
+
+  function wireHealthAndRestart() {
+    document.getElementById('check-health-btn').addEventListener('click', function () {
+      clearError();
+      loadHealth().catch(function (err) { showError(err.message); });
+    });
+    document.getElementById('restart-btn').addEventListener('click', function () {
+      confirmDialog(
+        'Restart the service now? It will be briefly unavailable while the platform relaunches it.'
+      ).then(function (ok) {
+        if (!ok) return;
+        clearError();
+        api('/admin/api/restart', { method: 'POST' })
+          .then(function (body) { showInfo(body.message); })
+          .catch(function (err) { showError(err.message); });
+      });
+    });
+  }
+
   function refresh() {
-    return Promise.all([loadConfig(), loadAudit()]);
+    return Promise.all([loadConfig(), loadAudit(), loadHealth()]);
   }
 
   clearError();
+  wireHealthAndRestart();
   refresh().catch(function (err) { showError(err.message); });
 })();
 `;
@@ -318,9 +368,19 @@ function renderDashboard() {
     <h1>Environment Variables</h1>
     <p class="lead">Manage a subset of configuration without touching Railway. Bootstrap secrets, and who can access this page, stay Railway-only by design.</p>
     <div id="error-banner" class="error-banner"></div>
+    <div id="info-banner" class="info-banner"></div>
 
     <h2>Configuration</h2>
     <div id="config-list"></div>
+
+    <h2>System Health</h2>
+    <div class="card row">
+      <div id="health-status"></div>
+      <div class="actions">
+        <button class="btn-secondary" id="check-health-btn">Check now</button>
+        <button class="btn-secondary" id="restart-btn">Restart service</button>
+      </div>
+    </div>
 
     <h2>Audit Log</h2>
     <div id="audit-log"></div>

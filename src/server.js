@@ -11,6 +11,8 @@ const { createShareClient } = require('./linkedin/posts');
 const { registerAdminAuthRoutes } = require('./admin/auth');
 const { registerAdminApi } = require('./admin/api');
 const { registerAdminPages } = require('./admin/pages');
+const { registerAdminOps } = require('./admin/ops');
+const { createReloadController } = require('./admin/reload');
 
 // Builds the Bolt app on an ExpressReceiver so the LinkedIn OAuth routes
 // and /healthz share the single HTTP server (PLAN.md §3).
@@ -61,18 +63,19 @@ function createServer(config, db, overrides = {}) {
   registerDisconnect(app, { db });
   registerStats(app, { db });
   registerConnectPromptAction(app);
+  // Dedicated client with tightly bounded retries: these Slack calls are
+  // best-effort (OAuth notifications, an admin health probe), and the
+  // default policy (ten retries over ~30 minutes) would keep a handler alive
+  // across a Slack outage.
+  const slackClient =
+    overrides.slackClient ||
+    new WebClient(config.slackBotToken, {
+      retryConfig: { retries: 2, minTimeout: 500, maxTimeout: 2000 },
+    });
   registerAuthRoutes(receiver.router, {
     config,
     db,
-    // Dedicated client with tightly bounded retries: the OAuth routes' Slack
-    // calls are best-effort notifications, and the default policy (ten
-    // retries over ~30 minutes) would keep callback handlers alive across a
-    // Slack outage.
-    slackClient:
-      overrides.slackClient ||
-      new WebClient(config.slackBotToken, {
-        retryConfig: { retries: 2, minTimeout: 500, maxTimeout: 2000 },
-      }),
+    slackClient,
     linkedin: overrides.linkedin,
     ...(overrides.logger ? { logger: overrides.logger } : {}),
   });
@@ -85,12 +88,30 @@ function createServer(config, db, overrides = {}) {
       openId: overrides.adminOpenId,
       ...(overrides.logger ? { logger: overrides.logger } : {}),
     });
+    // envConfig is the pristine, never-mutated boot-time config
+    // (index.js keeps its own reference); jobs is the mutable cron-task
+    // holder the reload controller stops/restarts. Both default to
+    // something inert so tests that don't care about hot-reload still work.
+    const reloadController = createReloadController({
+      config,
+      db,
+      jobs: overrides.jobs || {},
+      ...(overrides.logger ? { logger: overrides.logger } : {}),
+    });
     registerAdminApi(receiver.router, {
       config,
       db,
+      envConfig: overrides.envConfig,
+      reloadController,
       ...(overrides.logger ? { logger: overrides.logger } : {}),
     });
     registerAdminPages(receiver.router, { config });
+    registerAdminOps(receiver.router, {
+      config,
+      db,
+      slackClient,
+      ...(overrides.logger ? { logger: overrides.logger } : {}),
+    });
   }
 
   app.error(async (err) => {
