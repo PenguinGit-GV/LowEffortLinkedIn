@@ -247,7 +247,15 @@ async function runSharePipeline(
     }
 
     await postEphemeralSafely({ client, logger }, channelId, userId, copy.C3);
-    await updateCardCounter({ db, client, logger }, post);
+    try {
+      await updateCardCounter({ db, client, logger }, post);
+    } catch (err) {
+      // The share itself succeeded and the user has been told so (C3) — a
+      // failed counter refresh is cosmetic and must not fall into the
+      // catch-all below, which would tell them to retry (retrying only
+      // yields C4 "already shared").
+      logger.warn(`Card counter update failed after a successful share: ${err.message}`);
+    }
   } catch (err) {
     logger.error('Share pipeline failed', err);
     await postEphemeralSafely(

@@ -124,6 +124,17 @@ describe('requireAdminSession (via /admin/api/config)', () => {
     const res = await agent.get('/admin/api/config').set('Cookie', sessionCookieFor('U111'));
     expect(res.status).toBe(200);
   });
+
+  test('a malformed %-escape in a cookie reads as "not authenticated", not a 500', async () => {
+    // decodeURIComponent throws a URIError on values like "%zz"; any other
+    // app on the same domain can plant such a cookie. It must not turn
+    // every /admin request into a 500 until the user clears cookies.
+    const agent = buildApp({ config: testConfig() });
+    const res = await agent
+      .get('/admin/api/config')
+      .set('Cookie', 'some_other_app=%zz; admin_session=%zz');
+    expect(res.status).toBe(401);
+  });
 });
 
 describe('requireJsonContentType (CSRF mitigation, F6)', () => {

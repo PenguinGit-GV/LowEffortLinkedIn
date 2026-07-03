@@ -16,7 +16,14 @@ function parseCookies(req) {
     if (idx === -1) return acc;
     const key = part.slice(0, idx).trim();
     const value = part.slice(idx + 1).trim();
-    if (key) acc[key] = decodeURIComponent(value);
+    if (!key) return acc;
+    try {
+      acc[key] = decodeURIComponent(value);
+    } catch {
+      // A malformed %-escape (any other app on the domain can plant one)
+      // must read as "no such cookie" — not a URIError that 500s every
+      // /admin route until the user clears their cookies.
+    }
     return acc;
   }, {});
 }

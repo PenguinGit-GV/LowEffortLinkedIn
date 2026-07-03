@@ -194,6 +194,37 @@ describe('runSharePipeline', () => {
     expect(d.client.reactions.add).toHaveBeenCalledTimes(1);
   });
 
+  test('a counter-refresh failure after a successful share stays cosmetic — no contradictory "try again" message', async () => {
+    // The share succeeds and C3 is sent; then the card-counter refresh blows
+    // up on its DB read. The user must NOT also get the generic failure
+    // (retrying only yields C4 "already shared").
+    const dbParts = fakeDb();
+    const innerDb = dbParts.db;
+    const db = (table) => {
+      if (table === 'post_cards') {
+        return {
+          where: () => ({
+            select: async () => {
+              throw new Error('db went away');
+            },
+          }),
+        };
+      }
+      return innerDb(table);
+    };
+    db.fn = innerDb.fn;
+    const d = { ...deps({ dbParts }), db };
+    await runSharePipeline(d, JOB);
+
+    expect(dbParts.shareInserts).toHaveLength(1);
+    const texts = d.client.chat.postEphemeral.mock.calls.map((c) => c[0].text);
+    expect(texts).toContain(copy.C3);
+    expect(texts.some((t) => /Something went wrong/.test(t))).toBe(false);
+    expect(d.logger.warn).toHaveBeenCalledWith(
+      expect.stringContaining('Card counter update failed after a successful share')
+    );
+  });
+
   test('no reaction after the first share', async () => {
     const d = deps({ dbParts: fakeDb({ successCount: 2 }) });
     await runSharePipeline(d, JOB);

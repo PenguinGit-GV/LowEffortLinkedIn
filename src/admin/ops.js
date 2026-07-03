@@ -64,13 +64,26 @@ function registerAdminOps(router, { config, db, slackClient, logger = console })
 
   router.post('/admin/api/restart', auth, (req, res) => {
     logger.info(`Admin restart requested by ${req.adminSlackUserId}`);
+    // Hand off to index.js's SIGTERM handler rather than exiting cold: a bare
+    // process.exit() here would drop in-flight handlers (a share pipeline
+    // killed between the LinkedIn post and its shares insert forgets the
+    // share — the idempotency guard then lets the user post it twice) and
+    // could cut the connection before this response reaches the browser.
+    // Signalled on 'finish' so the response has flushed first, with a timed
+    // backstop in case 'finish' never fires; Railway's restart policy brings
+    // the container back up with the now-persisted config.
+    let signalled = false;
+    const requestShutdown = () => {
+      if (signalled) return;
+      signalled = true;
+      process.kill(process.pid, 'SIGTERM');
+    };
+    res.on('finish', requestShutdown);
+    setTimeout(requestShutdown, 3000).unref();
     res.json({
       ok: true,
       message: 'Restarting now — the app will be briefly unavailable while the platform relaunches it.',
     });
-    // Let the response flush before exiting; Railway's restart policy brings
-    // the container back up with the now-persisted config.
-    setImmediate(() => process.exit(0));
   });
 }
 
