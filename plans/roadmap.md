@@ -12,10 +12,10 @@ Build a web-based UI backend to manage environment variables directly in the app
 ## Phase 1: Foundation (Weeks 1-2)
 
 ### 1.1 API Endpoints
-- `GET /admin/config` - List all environment variables (non-sensitive metadata only)
-- `POST /admin/config/:key` - Create/update a single environment variable
-- `DELETE /admin/config/:key` - Remove an environment variable
-- `GET /admin/config/audit` - View change history with timestamps and actor
+- `GET /admin/api/config` - List all environment variables (masked if sensitive)
+- `PUT /admin/api/config/:key` - Create/update a single environment variable
+- `DELETE /admin/api/config/:key` - Remove an environment variable (reset to Railway default)
+- `GET /admin/api/audit` - View change history with timestamps and actor
 
 ### 1.2 Database Schema
 - `config_vars` table: `(key, value, updated_at, updated_by)`
@@ -64,8 +64,8 @@ The UI follows Apple's design principles — photography-first (in this case, da
 
 ### 3.2 Service Restart
 - Button to gracefully restart the bot (stop cron jobs, close DB, exit)
-- PM2 or systemd auto-restart will pick up new env vars
-- Lock the UI during restart with countdown
+- Relies on Railway's own restart-on-failure policy (`railway.json`) to bring the container back up with the new config — no PM2/systemd in this stack
+- Disclose the brief outage window in the UI rather than promising a seamless toggle
 
 ### 3.3 Health Check
 - Endpoint to report whether DB, Slack, and LinkedIn connections are alive
@@ -74,10 +74,9 @@ The UI follows Apple's design principles — photography-first (in this case, da
 
 ## Phase 4: Multi-Environment (Weeks 7+)
 
-### 4.1 Staging/Production Toggle (Optional)
-- If running multiple Railway envs, allow switching between them
-- Show which environment is currently active
-- Warn before modifying production
+### 4.1 Environment Visibility (descoped from live switching — see `plans/env-var-ui-feature-spec.md` Finding F4)
+- Live switching between Railway environments isn't implementable without storing another environment's `DATABASE_URL` (and likely its `TOKEN_ENCRYPTION_KEY`) somewhere — the exact bootstrap-secret problem the variable allow-list exists to avoid
+- Read-only label showing which environment the running instance is (`RAILWAY_ENVIRONMENT_NAME`, falling back to `NODE_ENV`)
 
 ### 4.2 Backup & Restore
 - Export current config as JSON (encrypted in DB)
@@ -85,8 +84,8 @@ The UI follows Apple's design principles — photography-first (in this case, da
 - Scheduled daily snapshots to DB
 
 ### 4.3 Team Collaboration
-- Real-time notifications when another user modifies config
-- Edit locking to prevent simultaneous changes
+- Edit locking to prevent simultaneous changes: a short-lived lock claimed before editing a key, so a second admin hitting the same key gets a conflict instead of silently overwriting
+- Poll-on-conflict, not real-time push — no websocket infrastructure in this app
 - Approval workflow for critical variables (optional)
 
 ## Technical Implementation Details
@@ -104,10 +103,11 @@ The UI follows Apple's design principles — photography-first (in this case, da
 ### Config Hot-Reload Strategy
 ```
 1. Write to DB with transaction
-2. POST to internal /admin/config/reload endpoint
-3. In-process: shallow reload only `config` module
-4. For vars that can't reload: flag UI as "requires manual restart"
-5. Log change to audit table
+2. Apply the reload strategy inline, in the same request: mutate the live
+   config object directly, or stop/restart the affected cron job
+3. For vars that can't reload in-process: flag UI as "requires restart"
+   and require the explicit restart action
+4. Log change to audit table
 ```
 
 ### Encryption Pattern

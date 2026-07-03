@@ -163,7 +163,7 @@ actually needed:
 - Tests: mutation takes effect without restart; cron restop reschedules correctly; restart-required vars are rejected by hot-apply
 
 ### PR 4 — Phase 4: Multi-Environment / Backup / Collaboration
-- Scope down 4.1 (see Finding F4) or defer per your call below
+- Scope down 4.1 per Finding F4: a read-only environment-name display instead of live switching (see Decision below)
 - `/admin/api/backup` + `/admin/api/restore` with diff preview
 - Scheduled daily snapshot to `config_audit` or a dedicated `config_snapshots` table
 - Edit locking: short-lived "key locked by X" row/flag to prevent two admins writing the same key concurrently; no real-time push (no websocket infra exists) — poll on save conflict instead
