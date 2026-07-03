@@ -29,21 +29,31 @@ Build a web-based UI backend to manage environment variables directly in the app
 
 ## Phase 2: Frontend (Weeks 3-4)
 
-### 2.1 Simple Web Form
-- Read-only view of all current env vars (masked sensitive keys)
-- Form inputs for each editable variable
-- Confirm dialog before applying changes
-- Success/error notifications
+### 2.1 Apple Design System
+The UI follows Apple's design principles — photography-first (in this case, data-first), minimal chrome, single-accent interactive color (Action Blue #0066cc), and whisper-soft elevation. Key constraints:
+- Typography: SF Pro Display/Text, 17px body (not 16px), negative letter-spacing on display sizes
+- Colors: One accent blue (#0066cc) for all interactions; near-black ink (#1d1d1f) for text; light canvas (#ffffff) and parchment (#f5f5f7) alternating surfaces
+- Spacing: 8px base unit; 80px sections, 24px cards
+- Shapes: Pill-radius CTAs, 18px card radius, no decorative shadows (product render shadow only)
+- Elevation: Surface-color change, not shadows; backdrop-blur on sticky bars only
 
-### 2.2 Security Indicators
-- Show which variables are considered "sensitive" (TOKEN, SECRET, KEY, PASSWORD)
-- Visual hint that changing certain vars may require app restart
-- Clear labeling of PostgreSQL vs Slack vs LinkedIn credentials
+### 2.2 Simple Web Form
+- Read-only view of all current env vars (masked sensitive keys) in a clean grid
+- Form inputs for each editable variable, styled as `search-input` component (pill-shaped, 44px height)
+- Confirm dialog with two blue pill CTAs ("Cancel" / "Apply")
+- Success/error notifications using `button-primary` styling
 
-### 2.3 Audit Log UI
-- Sortable table of recent changes
-- Filter by key, date range, user
-- Show before/after values (redacted for sensitive vars)
+### 2.3 Security Indicators
+- Show which variables are considered "sensitive" (TOKEN, SECRET, KEY, PASSWORD) with visual badge
+- Sensitive vars rendered on dark tiles (`surface-tile-1`) with Sky Link Blue text for contrast
+- Visual hint that changing certain vars may require app restart (red accent or exclamation icon in near-black)
+- Clear labeling of PostgreSQL vs Slack vs LinkedIn credentials in `typography.caption` (14px)
+
+### 2.4 Audit Log UI
+- Sortable table of recent changes using `store-utility-card` component styling
+- Filter toolbar above the table with `search-input` for key names
+- Show before/after values (redacted for sensitive vars) with pill-shaped "redacted" badges
+- Rows alternate light/parchment for readability; timestamp and actor in `typography.fine-print` (12px)
 
 ## Phase 3: Smart Reload (Weeks 5-6)
 
@@ -136,9 +146,19 @@ return decrypted;
 | Hot-reload breaks application | Only reload safe vars; flag others as restart-required |
 | Config not updated after button click | Health check endpoint post-change; show clear status |
 
+## Design System Reference
+
+The UI is built on Apple's design language documented in `plans/apple-design.md`. Key tokens:
+- **Colors**: `{colors.primary}` (#0066cc) for all actions; `{colors.ink}` (#1d1d1f) for body text
+- **Typography**: `{typography.body}` (SF Pro Text 17px/400) for paragraphs; `{typography.display-lg}` (SF Pro Display 40px/600) for section heads
+- **Components**: `{component.button-primary}` for main CTAs; `{component.store-utility-card}` for the audit log table
+- **Spacing**: `{spacing.lg}` (24px) for card padding; `{spacing.section}` (80px) for section vertical padding
+- **Shapes**: `{rounded.pill}` for pill CTAs; `{rounded.lg}` (18px) for utility cards; no decoration shadows
+
 ## Post-Launch Refinements
 
-- Add variable templates (LinkedIn version, reminder window, etc.)
-- Suggest "safe to change now" vars based on time-of-day
+- Add variable templates (LinkedIn version, reminder window, etc.) with preset values
+- Suggest "safe to change now" vars based on time-of-day and deployment windows
 - Slack notifications on every config change (with @mentions for sensitive vars)
 - Bulk import from Railway export (one-time CSV/JSON migration tool)
+- Dark mode support using Apple's dark-tile palette (surface-tile-1, primary-on-dark)
