@@ -102,6 +102,20 @@ describe('GET /admin/login/callback', () => {
     expect(cookie).toContain('HttpOnly');
     expect(cookie).toContain('SameSite=Strict');
   });
+
+  test('a state token is single-use — replaying it within its TTL is rejected', async () => {
+    const adminOpenId = {
+      exchangeCodeForToken: jest.fn().mockResolvedValue('slack-access-token'),
+      fetchSlackUserId: jest.fn().mockResolvedValue('U111'),
+    };
+    const agent = buildApp({ config: testConfig(), adminOpenId });
+    const state = signToken({ purpose: 'admin_login_state' }, ADMIN_SESSION_SECRET, 600);
+    const first = await agent.get(`/admin/login/callback?code=abc&state=${state}`);
+    expect(first.status).toBe(302);
+    const replay = await agent.get(`/admin/login/callback?code=abc&state=${state}`);
+    expect(replay.status).toBe(400);
+    expect(replay.headers['set-cookie']).toBeUndefined();
+  });
 });
 
 describe('requireAdminSession (via /admin/api/config)', () => {

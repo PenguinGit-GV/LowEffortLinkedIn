@@ -4,6 +4,7 @@
 // calls.
 
 const { signToken, verifyToken } = require('../crypto/signedToken');
+const { createSingleUseGuard } = require('../crypto/singleUse');
 const defaultOpenId = require('./slackOpenId');
 const { setSessionCookie, clearSessionCookie, readSession } = require('./session');
 
@@ -13,6 +14,12 @@ const STATE_TTL_SECONDS = 10 * 60;
 const STATE_PURPOSE = 'admin_login_state';
 
 function registerAdminAuthRoutes(router, { config, logger = console, openId = defaultOpenId }) {
+  // Same replay protection the LinkedIn OAuth callback applies to its state
+  // param (routes/auth.js): a captured admin-login state can't be presented
+  // twice within its TTL. In-memory is fine for the same single-process
+  // reasons documented in crypto/singleUse.js.
+  const consumeState = createSingleUseGuard();
+
   router.get('/admin/login', (_req, res) => {
     const state = signToken({ purpose: STATE_PURPOSE }, config.adminSessionSecret, STATE_TTL_SECONDS);
     res.redirect(302, openId.buildAuthorizeUrl(config, state));
@@ -25,7 +32,7 @@ function registerAdminAuthRoutes(router, { config, logger = console, openId = de
         return;
       }
       const statePayload = verifyToken(req.query.state, config.adminSessionSecret, STATE_PURPOSE);
-      if (!statePayload || !req.query.code) {
+      if (!statePayload || !req.query.code || !consumeState(statePayload)) {
         res.status(400).send('This sign-in link has expired. Go back and try again.');
         return;
       }
