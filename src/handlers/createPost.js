@@ -149,16 +149,18 @@ function parseSubmission(values, { defaultExpiryHours } = {}) {
     }
   }
 
-  // With an image, the LinkedIn payload appends the URL to the commentary
-  // (§4), so caption + "\n\n" + URL must also fit the 3000-char limit.
-  if (imageFileId && destinationUrl && !errors.destination_url) {
+  // The LinkedIn payload always appends the URL to the caption as a
+  // trailing line (§4 — lets LinkedIn's own crawler unfurl it), so caption +
+  // "\n\n" + URL must fit the 3000-char limit regardless of whether an
+  // image is attached.
+  if (destinationUrl && !errors.destination_url) {
     for (const blockId of ['caption_a', 'caption_b', 'caption_c']) {
       const value = text(blockId);
       if (!value || errors[blockId]) continue;
       const total = value.length + 2 + destinationUrl.length;
       if (total > CAPTION_MAX) {
         errors[blockId] =
-          `With an image attached, the link gets appended to the caption on LinkedIn — ` +
+          `The destination link gets appended to the caption on LinkedIn — ` +
           `together they're ${total} characters; the limit is ${CAPTION_MAX}. Please shorten this caption.`;
       }
     }

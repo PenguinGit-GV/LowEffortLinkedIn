@@ -157,6 +157,12 @@ describe('runSharePipeline', () => {
     // crawler unfurls it — no content.article, no server-side title fetch.
     expect(payload.commentary).toBe('Caption A text\n\nhttps://example.com/blog');
     expect(payload.content).toBeUndefined();
+    // Diagnostic line so a "no preview" report can be checked against what
+    // actually shipped, without re-deriving it from the DB (Decision #19 is
+    // unverified against a real destination site as of this writing).
+    expect(d.logger.log).toHaveBeenCalledWith(
+      expect.stringContaining('link unfurl expected')
+    );
 
     expect(d._dbParts.shareInserts).toEqual([
       expect.objectContaining({
@@ -501,7 +507,33 @@ describe('registered handlers', () => {
     });
     const ackArg = ack.mock.calls[0][0];
     expect(ackArg.response_action).toBe('errors');
-    expect(ackArg.errors.custom_caption).toContain('image');
+    expect(ackArg.errors.custom_caption).toContain('appended');
+  });
+
+  test('the same caption+URL budget applies to link-only posts too', async () => {
+    // The URL is always appended to the caption now (Decision #19), so this
+    // check can no longer be gated on an image being attached.
+    const post = {
+      ...POST,
+      image_slack_file_id: null,
+      destination_url: `https://example.com/${'x'.repeat(200)}`,
+    };
+    const handlers = captureHandlers(fakeDb({ post }));
+    const [, fn] = handlers.views[0];
+    const ack = jest.fn();
+    await fn({
+      ack,
+      body: { user: { id: 'U777' } },
+      view: {
+        private_metadata: JSON.stringify({ post_id: 'post-1', channel_id: 'C123' }),
+        state: { values: { custom_caption: { value: { value: 'y'.repeat(2900) } } } },
+      },
+      client: fakeClient(),
+      logger: quietLogger,
+    });
+    const ackArg = ack.mock.calls[0][0];
+    expect(ackArg.response_action).toBe('errors');
+    expect(ackArg.errors.custom_caption).toContain('appended');
   });
 
   test('edit button: a DB failure still gives the user feedback', async () => {
