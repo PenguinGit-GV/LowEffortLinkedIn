@@ -459,11 +459,17 @@ describe('runSharePipeline', () => {
 });
 
 describe('buildCustomShareModal', () => {
-  test('pre-fills Caption A and carries post/channel in metadata', () => {
+  test('pre-fills Caption A and carries post/channel/URL in metadata', () => {
     const view = buildCustomShareModal({ post: POST, channelId: 'C123' });
     expect(view.callback_id).toBe(CUSTOM_MODAL_CALLBACK_ID);
     expect(view.blocks[0].element.initial_value).toBe('Caption A text');
-    expect(JSON.parse(view.private_metadata)).toEqual({ post_id: 'post-1', channel_id: 'C123' });
+    // destination_url rides in metadata so the submission's caption+URL
+    // budget check needs no DB read inside Slack's 3-second ack window.
+    expect(JSON.parse(view.private_metadata)).toEqual({
+      post_id: 'post-1',
+      channel_id: 'C123',
+      destination_url: 'https://example.com/blog',
+    });
   });
 });
 
@@ -523,46 +529,32 @@ describe('registered handlers', () => {
     });
   });
 
-  test('custom modal submission enforces the caption+URL budget for image posts', async () => {
-    const post = {
-      ...POST,
-      image_slack_file_id: 'F123',
-      destination_url: `https://example.com/${'x'.repeat(200)}`,
-    };
-    const handlers = captureHandlers(fakeDb({ post }));
-    const [, fn] = handlers.views[0];
-    const ack = jest.fn();
-    await fn({
-      ack,
-      body: { user: { id: 'U777' } },
-      view: {
-        private_metadata: JSON.stringify({ post_id: 'post-1', channel_id: 'C123' }),
-        state: { values: { custom_caption: { value: { value: 'y'.repeat(2900) } } } },
-      },
-      client: fakeClient(),
-      logger: quietLogger,
+  test('custom modal submission enforces the caption+URL budget from metadata, with no DB read pre-ack', async () => {
+    // The URL is always appended to the caption (Decision #19), image or
+    // not, so caption + separator + URL must fit CAPTION_MAX. The check
+    // reads the URL from private_metadata — a DB that hangs here must not
+    // be able to blow Slack's 3-second ack window.
+    const neverAnswers = () => ({
+      where: () => ({ first: () => new Promise(() => {}) }),
     });
-    const ackArg = ack.mock.calls[0][0];
-    expect(ackArg.response_action).toBe('errors');
-    expect(ackArg.errors.custom_caption).toContain('appended');
-  });
-
-  test('the same caption+URL budget applies to link-only posts too', async () => {
-    // The URL is always appended to the caption now (Decision #19), so this
-    // check can no longer be gated on an image being attached.
-    const post = {
-      ...POST,
-      image_slack_file_id: null,
-      destination_url: `https://example.com/${'x'.repeat(200)}`,
+    neverAnswers.fn = { now: () => new Date() };
+    const handlers = { actions: [], views: [] };
+    const app = {
+      action: (id, fn) => handlers.actions.push([id, fn]),
+      view: (id, fn) => handlers.views.push([id, fn]),
     };
-    const handlers = captureHandlers(fakeDb({ post }));
+    registerShareHandlers(app, { config: testConfig(), db: neverAnswers, shareClient: okShareClient() });
     const [, fn] = handlers.views[0];
     const ack = jest.fn();
     await fn({
       ack,
       body: { user: { id: 'U777' } },
       view: {
-        private_metadata: JSON.stringify({ post_id: 'post-1', channel_id: 'C123' }),
+        private_metadata: JSON.stringify({
+          post_id: 'post-1',
+          channel_id: 'C123',
+          destination_url: `https://example.com/${'x'.repeat(200)}`,
+        }),
         state: { values: { custom_caption: { value: { value: 'y'.repeat(2900) } } } },
       },
       client: fakeClient(),
@@ -597,7 +589,7 @@ describe('registered handlers', () => {
     expect(client.chat.postEphemeral.mock.calls[0][0].text).toContain('Could not open the editor');
   });
 
-  test('custom modal: a pre-ack DB failure keeps the modal open with a field error', async () => {
+  test('custom modal: a DB failure acks cleanly and surfaces as an ephemeral, not an ack timeout', async () => {
     const brokenDb = () => ({
       where: () => ({ first: async () => { throw new Error('connection refused'); } }),
     });
@@ -611,6 +603,7 @@ describe('registered handlers', () => {
     const [, fn] = handlers.views[0];
 
     const ack = jest.fn();
+    const client = fakeClient();
     await fn({
       ack,
       body: { user: { id: 'U777' } },
@@ -618,13 +611,30 @@ describe('registered handlers', () => {
         private_metadata: JSON.stringify({ post_id: 'post-1', channel_id: 'C123' }),
         state: { values: { custom_caption: { value: { value: 'Fine caption' } } } },
       },
-      client: fakeClient(),
+      client,
       logger: quietLogger,
     });
-    expect(ack).toHaveBeenCalledWith({
-      response_action: 'errors',
-      errors: { custom_caption: expect.stringContaining('try submitting again') },
+    // The valid submission acks with no arguments (modal closes)…
+    expect(ack).toHaveBeenCalledWith();
+    // …and the failure inside the pipeline reaches the user in-channel.
+    expect(client.chat.postEphemeral.mock.calls[0][0].text).toContain('Something went wrong');
+  });
+
+  test('edit button: an expired post gets C12 instead of opening the editor', async () => {
+    const expiredPost = { ...POST, expires_at: new Date(Date.now() - 60 * 1000) };
+    const handlers = captureHandlers(fakeDb({ post: expiredPost }));
+    const [, fn] = handlers.actions.find(([id]) => id === 'edit_share_custom');
+
+    const client = fakeClient();
+    await fn({
+      ack: jest.fn(),
+      body: { user: { id: 'U777' }, channel: { id: 'C123' }, trigger_id: 't' },
+      action: { value: JSON.stringify({ post_id: 'post-1' }) },
+      client,
+      logger: quietLogger,
     });
+    expect(client.views.open).not.toHaveBeenCalled();
+    expect(client.chat.postEphemeral.mock.calls[0][0].text).toBe(copy.C12);
   });
 
   test('custom modal submission runs the pipeline with variation CUSTOM', async () => {
