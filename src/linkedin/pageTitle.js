@@ -17,9 +17,24 @@ const HTTP_TIMEOUT_MS = 5_000;
 // the read avoids downloading an entire multi-MB page just for it.
 const MAX_BYTES = 65_536;
 const MAX_TITLE_LENGTH = 200;
-// Use a generic browser UA to avoid being blocked by WAFs that reject bots.
-// Some sites (like getvocal.ai) have strict rules against bot identifiers.
+// A marketer reported the link preview showing only the hostname; a manual
+// check against the destination URL got a 403, and the earlier honest,
+// Slackbot-style UA (see git history) was the suspect. That check ran from
+// this project's sandboxed dev environment, whose outbound proxy denies ALL
+// external HTTPS by policy — it 403s example.com too — so the 403 is not
+// confirmed to come from the destination site's own WAF specifically
+// rejecting bot UAs. This UA + the client-hint headers below are a
+// defensive best guess, not a verified fix; re-check real /create-post
+// outcomes after deploy. If it doesn't help, the honest bot UA a lot of
+// sites explicitly allowlist (Slackbot/Twitterbot/facebookexternalhit) is
+// worth reinstating instead of layering on more browser-impersonation.
+// Chrome's version number ages — a UA a few years stale is itself a signal
+// some bot detectors key on, so bump this periodically.
 const USER_AGENT = 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36';
+// Paired client hints for the UA above — a browser-like UA with none of
+// these looks more anomalous to WAFs (Cloudflare/Akamai etc.) than a UA
+// that admits to being a bot, since real Chrome always sends them.
+const SEC_CH_UA = '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"';
 
 const NAMED_ENTITIES = {
   amp: '&',
@@ -138,6 +153,15 @@ async function fetchArticleTitle(url, { logger = console } = {}) {
         'DNT': '1',
         'Connection': 'keep-alive',
         'Upgrade-Insecure-Requests': '1',
+        // Real Chrome sends these alongside the UA string above; a request
+        // with the UA but not these looks more like a spoofed one.
+        'Sec-CH-UA': SEC_CH_UA,
+        'Sec-CH-UA-Mobile': '?0',
+        'Sec-CH-UA-Platform': '"Linux"',
+        'Sec-Fetch-Dest': 'document',
+        'Sec-Fetch-Mode': 'navigate',
+        'Sec-Fetch-Site': 'none',
+        'Sec-Fetch-User': '?1',
       },
     });
 
