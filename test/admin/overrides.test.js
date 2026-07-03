@@ -110,6 +110,14 @@ describe('listManagedVars', () => {
     });
     await expect(listManagedVars(envConfig(), db, KEY)).resolves.toBeInstanceOf(Array);
   });
+
+  test('shows "(not set)" rather than the literal string "null" for an unset env default', async () => {
+    const { db } = fakeDb();
+    // LINKEDIN_REDIRECT_URI is null in mock mode — never configured.
+    const vars = await listManagedVars(envConfig(), db, KEY);
+    const redirectUri = vars.find((v) => v.key === 'LINKEDIN_REDIRECT_URI');
+    expect(redirectUri.value).toBe('(not set)');
+  });
 });
 
 describe('applyOverride', () => {

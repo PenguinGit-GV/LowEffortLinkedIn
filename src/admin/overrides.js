@@ -51,6 +51,13 @@ function maskForDisplay(displayValue, isSensitive) {
   return str.length <= 4 ? '••••' : `••••${str.slice(-4)}`;
 }
 
+// A few LinkedIn vars are null in mock mode (never set in the environment) —
+// String(null) would otherwise render the literal text "null" in the
+// dashboard and the audit trail.
+function displayOf(value) {
+  return value === null || value === undefined ? '(not set)' : String(value);
+}
+
 // -> [{ key, value, sensitive, reload, source, updatedAt, updatedBy }]
 // value is masked for sensitive keys — the raw value never leaves this module
 // for those.
@@ -65,7 +72,7 @@ async function listManagedVars(envConfig, db, encryptionKey) {
       : envConfig[entry.configKey];
     return {
       key,
-      value: maskForDisplay(String(runtimeValue), entry.sensitive),
+      value: maskForDisplay(displayOf(runtimeValue), entry.sensitive),
       sensitive: entry.sensitive,
       reload: entry.reload,
       source: override ? 'override' : 'env',
@@ -85,7 +92,7 @@ async function applyOverride(db, encryptionKey, { key, rawValue, actorSlackId, e
   }
 
   const overrides = await loadOverrides(db, encryptionKey);
-  const priorRaw = overrides[key] ? overrides[key].raw : String(envConfig[entry.configKey]);
+  const priorRaw = overrides[key] ? overrides[key].raw : displayOf(envConfig[entry.configKey]);
   const oldDisplay = redactForAudit(priorRaw, entry.sensitive);
   const newDisplay = redactForAudit(rawValue, entry.sensitive);
   const storedValue = entry.sensitive ? encryptToken(rawValue, encryptionKey) : rawValue;
@@ -130,7 +137,7 @@ async function resetOverride(db, encryptionKey, { key, actorSlackId, envConfig }
   if (!existing) return null;
 
   const oldDisplay = redactForAudit(existing.raw, entry.sensitive);
-  const newDisplay = redactForAudit(String(envConfig[entry.configKey]), entry.sensitive);
+  const newDisplay = redactForAudit(displayOf(envConfig[entry.configKey]), entry.sensitive);
 
   await db.transaction(async (trx) => {
     await trx('config_overrides').where({ key }).delete();
