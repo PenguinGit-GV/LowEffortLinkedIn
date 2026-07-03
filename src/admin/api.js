@@ -169,6 +169,7 @@ function registerAdminApi(router, { config, db, envConfig = config, reloadContro
         actorSlackId: req.adminSlackUserId,
         envConfig,
         onApplied: applyReload,
+        checkLock: (key, slackUserId) => lockRegistry.check(key, slackUserId),
       });
       res.json({ dryRun: false, results });
     } catch (err) {

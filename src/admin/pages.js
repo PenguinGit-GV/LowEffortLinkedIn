@@ -349,6 +349,16 @@ const CLIENT_SCRIPT = `
     URL.revokeObjectURL(url);
   }
 
+  function planRowDetail(row) {
+    // Masked before/after (see src/admin/backup.js's planRestore) — never
+    // the raw value, so a sensitive key's diff doesn't put a secret on
+    // screen in plaintext.
+    if (row.currentDisplay !== undefined && row.newDisplay !== undefined) {
+      return row.currentDisplay + ' → ' + row.newDisplay;
+    }
+    return row.reason || row.from || '';
+  }
+
   function renderRestorePlan(plan) {
     var container = document.getElementById('restore-plan');
     container.innerHTML = '';
@@ -365,7 +375,7 @@ const CLIENT_SCRIPT = `
     var tbody = document.createElement('tbody');
     plan.forEach(function (row) {
       var tr = document.createElement('tr');
-      [row.key, row.status, row.reason || row.from || ''].forEach(function (text) {
+      [row.key, row.status, planRowDetail(row)].forEach(function (text) {
         var td = document.createElement('td');
         td.textContent = text;
         tr.appendChild(td);
@@ -428,11 +438,20 @@ const CLIENT_SCRIPT = `
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ entries: pendingEntries, dryRun: false }),
           })
-            .then(function () {
+            .then(function (body) {
+              // The server applies sequentially and keeps going on a
+              // per-key failure — a restore that partially fails must not
+              // look identical to one that fully succeeded.
+              var failed = body.results.filter(function (r) { return r.status === 'error'; });
+              renderRestorePlan(body.results);
               pendingEntries = null;
               confirmBtn.style.display = 'none';
-              document.getElementById('restore-plan').innerHTML = '';
               fileInput.value = '';
+              if (failed.length) {
+                showError(failed.length + ' of ' + body.results.length + ' entries could not be applied — see the table above.');
+              } else {
+                document.getElementById('restore-plan').innerHTML = '';
+              }
               return refresh();
             })
             .catch(function (err) { showError(err.message); });

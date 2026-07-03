@@ -18,7 +18,7 @@
 // the downloaded file accordingly.
 
 const { getEntry } = require('./allowList');
-const { loadOverrides, applyOverride } = require('./overrides');
+const { loadOverrides, applyOverride, maskForDisplay } = require('./overrides');
 
 async function exportOverrides(db, encryptionKey) {
   const overrides = await loadOverrides(db, encryptionKey);
@@ -29,6 +29,11 @@ async function exportOverrides(db, encryptionKey) {
 // committing to a restore. Reuses each key's real validator so a
 // corrupted/tampered backup file can't smuggle in an unmanaged key or an
 // invalid value at restore time either.
+//
+// currentDisplay/newDisplay are masked the same way the config list view
+// masks sensitive values — a diff that showed raw values would put a
+// secret like LINKEDIN_CLIENT_SECRET on screen in plaintext, undermining
+// the masking discipline used everywhere else in the dashboard.
 async function planRestore(db, encryptionKey, envConfig, entries) {
   const overrides = await loadOverrides(db, encryptionKey);
   return entries.map(({ key, value }) => {
@@ -39,15 +44,33 @@ async function planRestore(db, encryptionKey, envConfig, entries) {
     }
     const current = overrides[key] ? overrides[key].raw : String(envConfig[entry.configKey]);
     if (current === value) return { key, status: 'unchanged' };
-    return { key, status: 'would-change', from: overrides[key] ? 'override' : 'env' };
+    return {
+      key,
+      status: 'would-change',
+      from: overrides[key] ? 'override' : 'env',
+      currentDisplay: maskForDisplay(current, entry.sensitive),
+      newDisplay: maskForDisplay(value, entry.sensitive),
+    };
   });
 }
 
 // Applies sequentially and keeps going on a per-key failure — a bad entry in
-// a large restore shouldn't roll back every other valid one.
-async function applyRestore(db, encryptionKey, { entries, actorSlackId, envConfig, onApplied }) {
+// a large restore shouldn't roll back every other valid one. checkLock lets
+// the caller reject a key someone else is mid-edit on, the same way a
+// direct PUT/DELETE would be rejected — without it, a restore could
+// silently clobber a value another admin is actively editing (confirmed:
+// see plans/env-var-ui-feature-spec.md's Phase 4 review).
+async function applyRestore(db, encryptionKey, { entries, actorSlackId, envConfig, onApplied, checkLock }) {
   const results = [];
   for (const { key, value } of entries) {
+    if (checkLock) {
+      const lockCheck = checkLock(key, actorSlackId);
+      if (!lockCheck.ok) {
+        results.push({ key, status: 'error', reason: `locked for editing by ${lockCheck.lockedBy}` });
+        // eslint-disable-next-line no-continue
+        continue;
+      }
+    }
     try {
       // eslint-disable-next-line no-await-in-loop
       const result = await applyOverride(db, encryptionKey, {

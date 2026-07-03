@@ -271,7 +271,15 @@ describe('POST /admin/api/restore', () => {
       .send({ entries: [{ key: 'REMINDER_CRON', value: '0 12 * * *' }] });
     expect(res.status).toBe(200);
     expect(res.body.dryRun).toBe(true);
-    expect(res.body.plan).toEqual([{ key: 'REMINDER_CRON', status: 'would-change', from: 'env' }]);
+    expect(res.body.plan).toEqual([
+      {
+        key: 'REMINDER_CRON',
+        status: 'would-change',
+        from: 'env',
+        currentDisplay: '0 9 * * *',
+        newDisplay: '0 12 * * *',
+      },
+    ]);
     expect(overridesMap.has('REMINDER_CRON')).toBe(false);
   });
 
@@ -290,6 +298,40 @@ describe('POST /admin/api/restore', () => {
     expect(res.body.results).toEqual([{ key: 'PUBLIC_BASE_URL', status: 'applied' }]);
     expect(overridesMap.get('PUBLIC_BASE_URL').value).toBe('https://restored.up.railway.app');
     expect(config.publicBaseUrl).toBe('https://restored.up.railway.app'); // MUTATE reload applied
+  });
+
+  test('a restore does not clobber a key another admin currently holds an edit-lock on', async () => {
+    const { agent, overridesMap } = buildApp({
+      config: testConfig({ MARKETER_SLACK_IDS: 'U111,U222' }),
+    });
+    await agent.post('/admin/api/config/REMINDER_CRON/lock').set('Cookie', sessionCookie('U111'));
+
+    const res = await agent
+      .post('/admin/api/restore')
+      .set('Cookie', sessionCookie('U222'))
+      .send({ entries: [{ key: 'REMINDER_CRON', value: '0 20 * * *' }], dryRun: false });
+
+    expect(res.status).toBe(200);
+    expect(res.body.results).toEqual([
+      { key: 'REMINDER_CRON', status: 'error', reason: 'locked for editing by U111' },
+    ]);
+    expect(overridesMap.has('REMINDER_CRON')).toBe(false);
+  });
+
+  test('a restore proceeds normally for keys with no active lock', async () => {
+    const { agent, overridesMap } = buildApp({
+      config: testConfig({ MARKETER_SLACK_IDS: 'U111,U222' }),
+    });
+    await agent.post('/admin/api/config/REMINDER_CRON/lock').set('Cookie', sessionCookie('U111'));
+
+    const res = await agent
+      .post('/admin/api/restore')
+      .set('Cookie', sessionCookie('U222'))
+      .send({ entries: [{ key: 'PUBLIC_BASE_URL', value: 'https://restored.up.railway.app' }], dryRun: false });
+
+    expect(res.status).toBe(200);
+    expect(res.body.results).toEqual([{ key: 'PUBLIC_BASE_URL', status: 'applied' }]);
+    expect(overridesMap.get('PUBLIC_BASE_URL').value).toBe('https://restored.up.railway.app');
   });
 
   test('400s a malformed entries payload', async () => {

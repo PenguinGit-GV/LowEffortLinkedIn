@@ -105,7 +105,26 @@ describe('planRestore', () => {
   test('flags a genuine change as would-change, noting the current source', async () => {
     const { db } = fakeDb();
     const plan = await planRestore(db, KEY, envConfig(), [{ key: 'REMINDER_CRON', value: '0 12 * * *' }]);
-    expect(plan).toEqual([{ key: 'REMINDER_CRON', status: 'would-change', from: 'env' }]);
+    expect(plan).toEqual([
+      {
+        key: 'REMINDER_CRON',
+        status: 'would-change',
+        from: 'env',
+        currentDisplay: '0 9 * * *',
+        newDisplay: '0 12 * * *',
+      },
+    ]);
+  });
+
+  test('masks a would-change diff for a sensitive key rather than showing the raw value', async () => {
+    const { db } = fakeDb();
+    const plan = await planRestore(db, KEY, envConfig(), [
+      { key: 'LINKEDIN_CLIENT_SECRET', value: 'brand-new-secret-value' },
+    ]);
+    expect(plan[0].status).toBe('would-change');
+    expect(plan[0].currentDisplay).not.toContain('brand-new-secret-value');
+    expect(plan[0].newDisplay).not.toContain('brand-new-secret-value');
+    expect(plan[0].newDisplay).toMatch(/^••••/);
   });
 });
 
@@ -130,5 +149,27 @@ describe('applyRestore', () => {
     expect(overridesMap.get('REMINDER_CRON').value).toBe('0 12 * * *');
     expect(onApplied).toHaveBeenCalledWith('REMINDER_CRON', '0 12 * * *');
     expect(onApplied).toHaveBeenCalledTimes(1); // only the successful one
+  });
+
+  test('rejects a key someone else holds an active edit-lock on, without aborting the rest', async () => {
+    const { db, overridesMap } = fakeDb();
+    const checkLock = jest.fn((key) =>
+      key === 'REMINDER_CRON' ? { ok: false, lockedBy: 'U999' } : { ok: true }
+    );
+
+    const results = await applyRestore(db, KEY, {
+      entries: [
+        { key: 'REMINDER_CRON', value: '0 20 * * *' },
+        { key: 'PUBLIC_BASE_URL', value: 'https://restored.up.railway.app' },
+      ],
+      actorSlackId: 'U111',
+      envConfig: envConfig(),
+      checkLock,
+    });
+
+    expect(results[0]).toEqual({ key: 'REMINDER_CRON', status: 'error', reason: 'locked for editing by U999' });
+    expect(results[1]).toEqual({ key: 'PUBLIC_BASE_URL', status: 'applied' });
+    expect(overridesMap.has('REMINDER_CRON')).toBe(false);
+    expect(overridesMap.get('PUBLIC_BASE_URL').value).toBe('https://restored.up.railway.app');
   });
 });
