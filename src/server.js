@@ -10,6 +10,7 @@ const { registerConnectPromptAction } = require('./slack/connectPrompt');
 const { createShareClient } = require('./linkedin/posts');
 const { registerAdminAuthRoutes } = require('./admin/auth');
 const { registerAdminApi } = require('./admin/api');
+const { registerAdminPages } = require('./admin/pages');
 
 // Builds the Bolt app on an ExpressReceiver so the LinkedIn OAuth routes
 // and /healthz share the single HTTP server (PLAN.md §3).
@@ -89,6 +90,7 @@ function createServer(config, db, overrides = {}) {
       db,
       ...(overrides.logger ? { logger: overrides.logger } : {}),
     });
+    registerAdminPages(receiver.router, { config });
   }
 
   app.error(async (err) => {
