@@ -83,7 +83,9 @@ async function runExpiryReminder({ db, config, slackClient, logger = console }, 
       );
     }
   }
-  if (due.length > 0) logger.log(`Expiry reminders: ${sent}/${due.length} sent`);
+  // .info(), not .log() — logger defaults to console, but the real Bolt
+  // Logger (no .log) works here too if a future change ever passes it in.
+  if (due.length > 0) logger.info(`Expiry reminders: ${sent}/${due.length} sent`);
   return { due: due.length, sent };
 }
 

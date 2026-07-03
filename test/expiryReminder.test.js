@@ -58,7 +58,10 @@ function fakeDb(dueUsers) {
   return { db, updates };
 }
 
-const quiet = { error: jest.fn(), log: jest.fn() };
+// Mirrors @slack/logger's real Logger interface (no .log) — see
+// test/share.test.js's quietLogger for why this matters: a mock with an
+// extra .log stub masked the exact bug that broke production once already.
+const quiet = { error: jest.fn(), info: jest.fn() };
 
 describe('runExpiryReminder', () => {
   test('DMs each due user with C5 and a long-lived reconnect link, then stamps', async () => {
