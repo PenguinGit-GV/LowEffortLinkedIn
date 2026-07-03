@@ -94,6 +94,14 @@ async function runSharePipeline(
       return;
     }
 
+    // The post-expiry job only removes the card's buttons on its own cron
+    // cadence, so a click that lands in that gap (or a stale card left open
+    // in someone's browser) must still be rejected here, authoritatively.
+    if (post.expires_at && new Date(post.expires_at) <= new Date()) {
+      await postEphemeralSafely({ client, logger }, channelId, userId, copy.C12);
+      return;
+    }
+
     // Durable idempotency pre-check (Decision #12): one successful share per
     // person per post, any variation.
     const already = await db('shares')

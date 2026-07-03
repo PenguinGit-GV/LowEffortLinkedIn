@@ -34,7 +34,8 @@ Choices locked in during planning, and why.
 | 14 | `/disconnect` | In MVP: self-service disconnect + full data erasure | `/disconnect` removes the LinkedIn connection; `/disconnect all` also erases share history. Makes the PRIVACY.md deletion promise self-service. |
 | 15 | Leaderboard | In MVP: `/advocacy-stats` command | Ephemeral, anyone can run it, top 10 sharers over a default 30-day window. All data already exists in `shares`. |
 | 16 | Company Pages & multi-workspace | Permanently out of scope | Internal tool, one workspace, personal profiles only — advocacy is employee voices, not the company page. Not on any roadmap. |
-| 17 | LinkedIn article title | Fetched from the destination page's real `<title>`, falling back to the bare hostname | The hostname-only title (added when the required-field schema-drift bug was hotfixed) worked but read as boring in the LinkedIn preview. Fetched once at `/create-post` time so a slow/unreachable source site never delays or breaks a Share click; failures fall back to the original hostname behavior. *(Renumber if this collides with another Decision #17 added in parallel — see §5's `posts` table for the same caveat.)* |
+| 17 | Post sharing expiry | In MVP: disable the Share buttons after a window, keep the message | `DEFAULT_POST_EXPIRY_HOURS` (default 8) applies unless the marketer overrides it per post in `/create-post`. The card and its final counter stay visible for context; only future sharing closes. Deleting the message outright was considered and rejected — it destroys the visible record of what was shared. |
+| 18 | LinkedIn article title | Fetched from the destination page's real `<title>`, falling back to the bare hostname | The hostname-only title (added when the required-field schema-drift bug was hotfixed) worked but read as boring in the LinkedIn preview. Fetched once at `/create-post` time so a slow/unreachable source site never delays or breaks a Share click; failures fall back to the original hostname behavior. |
 
 ## 2. Feature Requirements
 
@@ -200,6 +201,24 @@ are populated.
   `slack_user_id`.
 - Users erased via `/disconnect all` naturally drop out (their rows are gone).
 
+### 2.6 Feature 6 — Post Sharing Expiry
+
+- Every post gets a sharing window, computed at `/create-post` submission time
+  as `now() + hours` and stored on `posts.expires_at`. The marketer may set an
+  optional "Sharing window, in hours" field in the modal (1–`MAX_POST_EXPIRY_HOURS`,
+  720); left blank, it falls back to `DEFAULT_POST_EXPIRY_HOURS` (Decision #17).
+- A cron job (`POST_EXPIRY_CRON`, default every 15 minutes — windows are
+  hours-scale, not days-scale like the token reminder) finds posts past their
+  window that haven't been closed yet, rebuilds the card **without** the
+  Share/Edit buttons, and stamps `posts.expired_at` so the job is idempotent.
+  The message, captions, image, and final share counter remain untouched.
+- The share pipeline (§2.3) independently checks `expires_at` on every share
+  attempt — a click landing in the gap between cron runs, or a stale card left
+  open in someone's browser, is rejected with copy C12 rather than silently
+  producing a share after the window closed.
+- Retroactively editing an already-broadcast post's window, or deleting a post
+  outright, remain out of scope (§13).
+
 ## 3. System Architecture
 
 ```
@@ -321,8 +340,15 @@ CREATE TABLE posts (
   created_by_slack_id  TEXT NOT NULL,
   article_title        TEXT NOT NULL DEFAULT '', -- LinkedIn content.article.title;
                                              -- resolved once at creation (§4)
+  expires_at           TIMESTAMPTZ,         -- computed at creation (§2.6); marketer's
+                                             -- override or DEFAULT_POST_EXPIRY_HOURS
+  expired_at           TIMESTAMPTZ,         -- stamped once the expiry job has removed
+                                             -- the Share buttons; dedupes that job
   created_at           TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- Powers the post-expiry job's "what's due" scan (§2.6).
+CREATE INDEX idx_posts_expires_at ON posts(expires_at) WHERE expired_at IS NULL;
 
 CREATE TABLE shares (
   id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -378,6 +404,9 @@ enough structure for a 3-table schema without ORM overhead).
 | `TOKEN_ENCRYPTION_KEY` | 32-byte base64 key for AES-256-GCM token encryption at rest |
 | `PUBLIC_BASE_URL` | This server's public HTTPS origin |
 | `LINKEDIN_MOCK_MODE` | `true` until LinkedIn API access is approved (§10, Phase 0) |
+| `REMINDER_CRON` | Optional; cron schedule (UTC) for the daily token-expiry reminder DM. Default `0 9 * * *` |
+| `DEFAULT_POST_EXPIRY_HOURS` | Optional; default sharing window for a new post, in hours. Default `8` (§2.6) |
+| `POST_EXPIRY_CRON` | Optional; cron schedule (UTC) for the post-expiry job. Default `*/15 * * * *` (§2.6) |
 | `PORT`, `NODE_ENV` | Standard server config |
 
 ## 8. User-Facing Copy (final)
@@ -400,8 +429,9 @@ Friendly-casual with emoji (Decision #10). These are the shipping strings;
 | C9 | Post created (ephemeral to marketer) | 📣 *Your post is live in {channel}!* You'll see the share counter tick up on the card. |
 | C10 | Unauthorized `/create-post` | 🚫 Sorry, only the marketing team can create posts. Think you should have access? Ask {marketer mention}. |
 | C11 | `/advocacy-stats` (ephemeral) | 🏆 *Top sharers, last {days} days* — {total} shares total<br>1. {mention} — {n} shares<br>2. … (top 10; if no shares: "No shares in this window yet — be the first! 👀") |
+| C12 | Share attempted on an expired post (ephemeral) | ⏰ Sharing for this post has closed. Keep an eye out for the next one! |
 
-**Card context line:** `Posted by {marketer mention} · {date} · ✅ {n} shares`
+**Card context line:** `Posted by {marketer mention} · {date} · ✅ {n} shares · Sharing closes {date/time}` (or `· ⏰ Sharing closed` once the window has passed)
 
 **Browser pages**
 
@@ -434,12 +464,19 @@ Friendly-casual with emoji (Decision #10). These are the shipping strings;
 - Raw tokens and full LinkedIn payloads are never logged.
 - Server fails fast at startup if `MARKETER_SLACK_IDS` is empty/unset, rather than
   silently locking everyone out or (worse) leaving the command unrestricted.
-- The article-title fetch (§4, Decision #17) makes an outbound request to a
-  URL, but only one supplied by an already-authorized marketer (the same
-  `destination_url` gate as the rest of `/create-post`) — not arbitrary user
-  input. It's bounded regardless: 5s timeout, response capped at the first
-  64KB, non-HTML responses rejected without reading the body, and any failure
-  degrades to the hostname rather than erroring.
+- The article-title fetch (§4, Decision #18) makes an outbound request to a
+  URL supplied by an already-authorized marketer (the same `destination_url`
+  gate as the rest of `/create-post`) — not arbitrary user input, but still a
+  lower trust tier than the server, so it's treated as the standard SSRF
+  shape: `src/linkedin/ssrfGuard.js` blocks private/loopback/link-local
+  (including cloud metadata) IPs and internal hostnames, checked both up
+  front and on every redirect hop, plus DNS-resolution-time validation of
+  the address actually connected to (closing the DNS-rebinding gap a
+  one-time check would miss). Also bounded regardless of target: a genuine
+  wall-clock timeout (not just axios's inactivity-based one, which a slow
+  drip never trips), response capped at the first 64KB, non-HTML responses
+  rejected without reading the body, and any failure degrades to the
+  hostname rather than erroring.
 
 ## 10. Risks & Mitigations
 
@@ -534,6 +571,10 @@ Friendly-casual with emoji (Decision #10). These are the shipping strings;
   10. `/disconnect` → token gone, history kept; `/disconnect all` → row + history
       gone; both re-runnable without error.
   11. Force an expired `token_expires_at` → reminder DM fires.
+  12. `/create-post` with a short sharing window (e.g. 1 hour, or force
+      `expires_at` in the past) → post-expiry job removes the Share/Edit
+      buttons but leaves the message and counter; a share attempt in the gap
+      before the job runs is still blocked with C12.
 
 ## 13. Out of Scope
 
@@ -541,7 +582,9 @@ Settled scope decisions — nothing here is pending an answer.
 
 **On the future list** (plausible later, not designed for now):
 - Multi-channel broadcast for a single post.
-- Editing/deleting/expiring a post after it's been broadcast.
+- Editing an already-broadcast post's caption/image, or deleting it outright.
+  (Automatic sharing *expiry* is implemented — §2.6, Decision #17 — this item
+  is specifically about manual edit/delete after broadcast.)
 - Richer analytics beyond `/advocacy-stats` (per-post breakdowns, scheduled
   digests, exports) — the `shares` table already holds the data.
 

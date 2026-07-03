@@ -7,6 +7,7 @@ const { buildPostCard } = require('../blocks/postCard');
 const { escapeMrkdwn } = require('../mrkdwn');
 const { postEphemeralSafely } = require('../slack/ephemeral');
 const { fetchArticleTitle: defaultFetchArticleTitle } = require('../linkedin/pageTitle');
+const { MAX_POST_EXPIRY_HOURS } = require('../config');
 
 const MODAL_CALLBACK_ID = 'create_post_modal';
 // LinkedIn's commentary field limit (PLAN.md §2.1); enforced client-side via
@@ -19,7 +20,7 @@ const URL_MAX = 2500;
 const SECTION_TEXT_MAX = 3000;
 const URL_SECTION_BUDGET = 2900;
 
-function buildModal({ channelId }) {
+function buildModal({ channelId, defaultExpiryHours }) {
   const captionInput = (blockId, label, optional) => ({
     type: 'input',
     block_id: blockId,
@@ -67,13 +68,27 @@ function buildModal({ channelId }) {
           max_files: 1,
         },
       },
+      {
+        type: 'input',
+        block_id: 'expiry_hours',
+        optional: true,
+        label: { type: 'plain_text', text: `Sharing window, in hours (default ${defaultExpiryHours})` },
+        element: {
+          type: 'number_input',
+          action_id: 'value',
+          is_decimal_allowed: false,
+          min_value: '1',
+          max_value: String(MAX_POST_EXPIRY_HOURS),
+          placeholder: { type: 'plain_text', text: String(defaultExpiryHours) },
+        },
+      },
     ],
   };
 }
 
 // state.values → { parsed, errors }. errors is null when valid; otherwise a
 // { block_id: message } map for ack({ response_action: 'errors' }).
-function parseSubmission(values) {
+function parseSubmission(values, { defaultExpiryHours } = {}) {
   const text = (blockId) => {
     const raw = values[blockId]?.value?.value;
     return raw && raw.trim() ? raw.trim() : null;
@@ -120,6 +135,19 @@ function parseSubmission(values) {
 
   const imageFileId = values.image?.value?.files?.[0]?.id || null;
 
+  // number_input's client-side min/max already guard the common case; this
+  // is the server-side re-check the rest of the modal's fields also get.
+  const expiryHoursRaw = values.expiry_hours?.value?.value;
+  let expiryHours = defaultExpiryHours;
+  if (expiryHoursRaw !== undefined && expiryHoursRaw !== null && expiryHoursRaw !== '') {
+    const parsedHours = Number.parseFloat(expiryHoursRaw);
+    if (!Number.isFinite(parsedHours) || parsedHours <= 0 || parsedHours > MAX_POST_EXPIRY_HOURS) {
+      errors.expiry_hours = `Enter a number between 1 and ${MAX_POST_EXPIRY_HOURS}, or leave it blank for the default.`;
+    } else {
+      expiryHours = parsedHours;
+    }
+  }
+
   // With an image, the LinkedIn payload appends the URL to the commentary
   // (§4), so caption + "\n\n" + URL must also fit the 3000-char limit.
   if (imageFileId && destinationUrl && !errors.destination_url) {
@@ -143,6 +171,7 @@ function parseSubmission(values) {
       caption_b: text('caption_b'),
       caption_c: text('caption_c'),
       image_slack_file_id: imageFileId,
+      expiry_hours: expiryHours,
     },
     errors: null,
   };
@@ -156,15 +185,28 @@ async function publishPost(
   { db, client, config, logger, fetchArticleTitle = defaultFetchArticleTitle },
   { parsed, userId, originChannelId }
 ) {
+  const { expiry_hours: expiryHours, ...postFields } = parsed;
+  const expiresAt = new Date(Date.now() + expiryHours * 60 * 60 * 1000);
   // Once per post, not once per share (§4) — the fetch's latency/failure
   // mode never touches the actual Share button click.
-  const articleTitle = await fetchArticleTitle(parsed.destination_url, { logger });
+  const articleTitle = await fetchArticleTitle(postFields.destination_url, { logger });
 
   const [{ id: postId }] = await db('posts')
-    .insert({ ...parsed, created_by_slack_id: userId, article_title: articleTitle })
+    .insert({
+      ...postFields,
+      created_by_slack_id: userId,
+      expires_at: expiresAt,
+      article_title: articleTitle,
+    })
     .returning('id');
 
-  const post = { ...parsed, id: postId, created_by_slack_id: userId, article_title: articleTitle };
+  const post = {
+    ...postFields,
+    id: postId,
+    created_by_slack_id: userId,
+    expires_at: expiresAt,
+    article_title: articleTitle,
+  };
   let broadcast;
   try {
     broadcast = await client.chat.postMessage({
@@ -208,7 +250,7 @@ function registerCreatePost(app, { config, db, fetchArticleTitle }) {
     try {
       await client.views.open({
         trigger_id: command.trigger_id,
-        view: buildModal({ channelId: command.channel_id }),
+        view: buildModal({ channelId: command.channel_id, defaultExpiryHours: config.defaultPostExpiryHours }),
       });
     } catch (err) {
       logger.error('views.open failed', err);
@@ -220,7 +262,9 @@ function registerCreatePost(app, { config, db, fetchArticleTitle }) {
   });
 
   app.view(MODAL_CALLBACK_ID, async ({ ack, body, view, client, logger }) => {
-    const { parsed, errors } = parseSubmission(view.state.values);
+    const { parsed, errors } = parseSubmission(view.state.values, {
+      defaultExpiryHours: config.defaultPostExpiryHours,
+    });
     if (errors) {
       await ack({ response_action: 'errors', errors });
       return;

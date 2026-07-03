@@ -42,23 +42,39 @@ function buildPostCard({ post, shareCount }) {
     blocks.push({ type: 'section', text: { type: 'mrkdwn', text: escapeMrkdwn(text) } });
   }
 
-  const buttons = captions.map(([label]) => ({
-    type: 'button',
-    text: { type: 'plain_text', text: `Share Variation ${label}` },
-    action_id: `share_variation_${label.toLowerCase()}`,
-    value: JSON.stringify({ post_id: post.id, variation: label }),
-  }));
-  buttons.push({
-    type: 'button',
-    text: { type: 'plain_text', text: 'Edit & Share Custom' },
-    action_id: 'edit_share_custom',
-    value: JSON.stringify({ post_id: post.id }),
-  });
-  blocks.push({ type: 'actions', elements: buttons });
+  // Sharing expiry: once the post-expiry job has stamped expired_at, the
+  // buttons are removed entirely — the message and its counter stay visible,
+  // only future sharing is closed off.
+  const isExpired = Boolean(post.expired_at);
+  if (!isExpired) {
+    const buttons = captions.map(([label]) => ({
+      type: 'button',
+      text: { type: 'plain_text', text: `Share Variation ${label}` },
+      action_id: `share_variation_${label.toLowerCase()}`,
+      value: JSON.stringify({ post_id: post.id, variation: label }),
+    }));
+    buttons.push({
+      type: 'button',
+      text: { type: 'plain_text', text: 'Edit & Share Custom' },
+      action_id: 'edit_share_custom',
+      value: JSON.stringify({ post_id: post.id }),
+    });
+    blocks.push({ type: 'actions', elements: buttons });
+  }
 
   const createdAt = post.created_at ? new Date(post.created_at) : new Date();
   const unix = Math.floor(createdAt.getTime() / 1000);
   const isoDay = createdAt.toISOString().slice(0, 10);
+
+  let expirySegment = '';
+  if (isExpired) {
+    expirySegment = ' · ⏰ Sharing closed';
+  } else if (post.expires_at) {
+    const expiresAt = new Date(post.expires_at);
+    const expUnix = Math.floor(expiresAt.getTime() / 1000);
+    expirySegment = ` · Sharing closes <!date^${expUnix}^{date_short} {time}|${expiresAt.toISOString()}>`;
+  }
+
   blocks.push({
     type: 'context',
     elements: [
@@ -66,7 +82,8 @@ function buildPostCard({ post, shareCount }) {
         type: 'mrkdwn',
         text:
           `Posted by <@${post.created_by_slack_id}> · ` +
-          `<!date^${unix}^{date_short}|${isoDay}> · ✅ ${shareCount} share${shareCount === 1 ? '' : 's'}`,
+          `<!date^${unix}^{date_short}|${isoDay}> · ✅ ${shareCount} share${shareCount === 1 ? '' : 's'}` +
+          expirySegment,
       },
     ],
   });

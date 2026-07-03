@@ -232,6 +232,22 @@ describe('runSharePipeline', () => {
     expect(d.client.chat.postEphemeral.mock.calls[0][0].text).toBe(copy.C4);
   });
 
+  test('expired post → C12, no LinkedIn call, no share row (even if the card still shows buttons)', async () => {
+    const expiredPost = { ...POST, expires_at: new Date(Date.now() - 60_000) };
+    const d = deps({ dbParts: fakeDb({ post: expiredPost }) });
+    await runSharePipeline(d, JOB);
+    expect(d.shareClient.createPost).not.toHaveBeenCalled();
+    expect(d._dbParts.shareInserts).toHaveLength(0);
+    expect(d.client.chat.postEphemeral.mock.calls[0][0].text).toBe(copy.C12);
+  });
+
+  test('a post whose window has not yet passed shares normally', async () => {
+    const activePost = { ...POST, expires_at: new Date(Date.now() + 60_000) };
+    const d = deps({ dbParts: fakeDb({ post: activePost }) });
+    await runSharePipeline(d, JOB);
+    expect(d.shareClient.createPost).toHaveBeenCalledTimes(1);
+  });
+
   test('unique violation on insert (layer-2 race) → C4', async () => {
     const err = Object.assign(new Error('duplicate key'), { code: '23505' });
     const d = deps({ dbParts: fakeDb({ shareInsertError: err }) });
