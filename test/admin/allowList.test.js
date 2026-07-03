@@ -25,6 +25,19 @@ describe('allow-list exclusions', () => {
     expect(isManaged(key)).toBe(false);
     expect(getEntry(key)).toBeUndefined();
   });
+
+  // A plain ALLOW_LIST[key] bracket lookup returns an inherited
+  // Object.prototype member (truthy) for these keys instead of undefined,
+  // which would silently defeat every "!entry" guard in overrides.js —
+  // e.g. PUT/DELETE /admin/api/config/__proto__ bypassing the "not
+  // manageable" rejection entirely.
+  test.each(['__proto__', 'constructor', 'toString', 'hasOwnProperty'])(
+    '%s (an Object.prototype member) is not manageable',
+    (key) => {
+      expect(isManaged(key)).toBe(false);
+      expect(getEntry(key)).toBeUndefined();
+    }
+  );
 });
 
 describe('allow-list validators', () => {
@@ -51,6 +64,25 @@ describe('allow-list validators', () => {
   test('PUBLIC_BASE_URL and LINKEDIN_REDIRECT_URI require a parseable URL', () => {
     expect(ALLOW_LIST.PUBLIC_BASE_URL.validate('https://example.com')).toBe(true);
     expect(ALLOW_LIST.PUBLIC_BASE_URL.validate('not a url')).toBe(false);
+  });
+
+  test('PUBLIC_BASE_URL and LINKEDIN_REDIRECT_URI reject non-http(s) schemes', () => {
+    // These values get concatenated into links shown to ordinary Slack
+    // users and into OAuth redirect_uri params — new URL() alone would
+    // accept javascript:/file:/data: as "syntactically valid".
+    for (const bad of ['javascript:alert(1)', 'file:///etc/passwd', 'data:text/html,x']) {
+      expect(ALLOW_LIST.PUBLIC_BASE_URL.validate(bad)).toBe(false);
+      expect(ALLOW_LIST.LINKEDIN_REDIRECT_URI.validate(bad)).toBe(false);
+    }
+  });
+
+  test('ADVOCACY_CHANNEL_ID rejects a comma list that parses to zero IDs', () => {
+    // ",," passes a naive non-empty-string check but parses (via the comma
+    // split/trim/filter) to an empty array — silently violating config.js's
+    // own boot-time "at least one channel ID" invariant.
+    expect(ALLOW_LIST.ADVOCACY_CHANNEL_ID.validate(',,')).toBe(false);
+    expect(ALLOW_LIST.ADVOCACY_CHANNEL_ID.validate(' , , ')).toBe(false);
+    expect(ALLOW_LIST.ADVOCACY_CHANNEL_ID.validate('C0123ABCDEF')).toBe(true);
   });
 
   test('LINKEDIN_API_VERSION requires a 6-digit YYYYMM', () => {

@@ -34,12 +34,15 @@ function isNonEmptyString(v) {
   return typeof v === 'string' && v.trim().length > 0;
 }
 
+// Restricted to http(s): these values get concatenated into links shown to
+// ordinary (non-admin) Slack users (e.g. PUBLIC_BASE_URL in the connect-link
+// flow) and into OAuth redirect_uri params — a javascript:/file:/data: value
+// would parse "successfully" as a URL but produce a broken or dangerous link.
 function isValidUrl(v) {
   if (!isNonEmptyString(v)) return false;
   try {
-    // eslint-disable-next-line no-new
-    new URL(v);
-    return true;
+    const url = new URL(v);
+    return url.protocol === 'http:' || url.protocol === 'https:';
   } catch {
     return false;
   }
@@ -69,6 +72,13 @@ function splitCommaList(v) {
     .filter(Boolean);
 }
 
+// A raw string like ",," passes isNonEmptyString but parses to an empty
+// array — silently violating the same "at least one ID" invariant
+// config.js enforces on this var at boot.
+function isValidCommaList(v) {
+  return isNonEmptyString(v) && splitCommaList(v).length > 0;
+}
+
 // configKey: the property on the loaded config object this env var maps to.
 // parse: raw string (as stored/submitted) -> the value's runtime shape.
 // display: value -> human string for the admin list view (defaults to the
@@ -78,7 +88,7 @@ const ALLOW_LIST = Object.freeze({
     configKey: 'advocacyChannelIds',
     sensitive: false,
     reload: RELOAD.MUTATE,
-    validate: isNonEmptyString,
+    validate: isValidCommaList,
     parse: splitCommaList,
   },
   LINKEDIN_CLIENT_ID: {
@@ -147,8 +157,13 @@ function isManaged(key) {
   return Object.prototype.hasOwnProperty.call(ALLOW_LIST, key);
 }
 
+// A plain bracket lookup (ALLOW_LIST[key]) would return an inherited
+// Object.prototype member — truthy, not undefined — for key values like
+// "__proto__" or "constructor", silently defeating every "!entry" guard
+// callers rely on to reject an unmanaged key. hasOwnProperty first closes
+// that off.
 function getEntry(key) {
-  return ALLOW_LIST[key];
+  return isManaged(key) ? ALLOW_LIST[key] : undefined;
 }
 
 module.exports = { ALLOW_LIST, RELOAD, isManaged, getEntry };

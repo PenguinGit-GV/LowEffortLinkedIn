@@ -120,6 +120,36 @@ describe('PUT /admin/api/config/:key', () => {
     expect(res.status).toBe(404);
   });
 
+  test('404s __proto__/constructor instead of crashing or silently succeeding', async () => {
+    const { agent } = buildApp();
+    for (const key of ['__proto__', 'constructor']) {
+      // eslint-disable-next-line no-await-in-loop
+      const res = await agent
+        .put(`/admin/api/config/${key}`)
+        .set('Cookie', sessionCookie())
+        .send({ value: 'anything' });
+      expect(res.status).toBe(404);
+    }
+  });
+
+  test('rejects a non-http(s) PUBLIC_BASE_URL', async () => {
+    const { agent } = buildApp();
+    const res = await agent
+      .put('/admin/api/config/PUBLIC_BASE_URL')
+      .set('Cookie', sessionCookie())
+      .send({ value: 'javascript:alert(1)' });
+    expect(res.status).toBe(400);
+  });
+
+  test('rejects an ADVOCACY_CHANNEL_ID that parses to zero IDs', async () => {
+    const { agent } = buildApp();
+    const res = await agent
+      .put('/admin/api/config/ADVOCACY_CHANNEL_ID')
+      .set('Cookie', sessionCookie())
+      .send({ value: ',,' });
+    expect(res.status).toBe(400);
+  });
+
   test('401s without a valid admin session', async () => {
     const { agent } = buildApp();
     const res = await agent.put('/admin/api/config/REMINDER_CRON').send({ value: '0 10 * * *' });
@@ -141,6 +171,13 @@ describe('DELETE /admin/api/config/:key', () => {
     const { agent } = buildApp();
     const res = await agent.delete('/admin/api/config/REMINDER_CRON').set('Cookie', sessionCookie());
     expect(res.status).toBe(404);
+  });
+
+  test('404s __proto__ rather than returning a bogus success and writing a garbage audit row', async () => {
+    const { agent, auditRows } = buildApp();
+    const res = await agent.delete('/admin/api/config/__proto__').set('Cookie', sessionCookie());
+    expect(res.status).toBe(404);
+    expect(auditRows).toHaveLength(0);
   });
 });
 
