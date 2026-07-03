@@ -8,6 +8,7 @@ const copy = require('../copy');
 const { buildPostCard } = require('../blocks/postCard');
 const { decryptToken } = require('../crypto/tokenCipher');
 const { buildSharePayload } = require('../linkedin/posts');
+const { hostnameTitle } = require('../linkedin/pageTitle');
 const { getConnection, sendConnectPrompt } = require('../slack/connectPrompt');
 const { postEphemeralSafely } = require('../slack/ephemeral');
 const { fetchSlackFile } = require('../slack/files');
@@ -195,6 +196,9 @@ async function runSharePipeline(
       commentary,
       destinationUrl: post.destination_url,
       imageUrn,
+      // article_title is resolved once at /create-post time; the hostname
+      // fallback here only covers posts created before that column existed.
+      articleTitle: post.article_title || hostnameTitle(post.destination_url),
     });
 
     let postUrn = null;
