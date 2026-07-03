@@ -38,7 +38,7 @@ function duePost(id, overrides = {}) {
 // The due-scan query shape itself is exercised against real Postgres in the
 // smoke run; unit tests stub the due-list and verify the update/stamp
 // behavior around it, same split as expiryReminder.test.js.
-function fakeDb({ duePosts, successCounts = {} } = {}) {
+function fakeDb({ duePosts, successCounts = {}, cardsByPost = {} } = {}) {
   const postUpdates = [];
   const db = (table) => {
     if (table === 'posts') {
@@ -53,6 +53,21 @@ function fakeDb({ duePosts, successCounts = {} } = {}) {
         then: (resolve, reject) => Promise.resolve(duePosts).then(resolve, reject),
       };
       return b;
+    }
+    if (table === 'post_cards') {
+      return {
+        where: (cond) => ({
+          // Default to a single card mirroring the post's primary columns;
+          // override via cardsByPost to exercise multi-channel fan-out.
+          select: async () => {
+            if (cardsByPost[cond.post_id]) return cardsByPost[cond.post_id];
+            const p = (duePosts || []).find((d) => d.id === cond.post_id);
+            return p && p.slack_channel_id && p.slack_message_ts
+              ? [{ slack_channel_id: p.slack_channel_id, slack_message_ts: p.slack_message_ts }]
+              : [];
+          },
+        }),
+      };
     }
     if (table === 'shares') {
       return {
@@ -89,6 +104,54 @@ describe('runPostExpiry', () => {
     expect(context.elements[0].text).toContain('⏰ Sharing closed');
 
     expect(postUpdates).toEqual([expect.objectContaining({ expired_at: 'NOW' })]);
+  });
+
+  test('closes every card of a multi-channel post, then stamps once', async () => {
+    const { db, postUpdates } = fakeDb({
+      duePosts: [duePost('post-1')],
+      successCounts: { 'post-1': 3 },
+      cardsByPost: {
+        'post-1': [
+          { slack_channel_id: 'C_ONE', slack_message_ts: '1.1' },
+          { slack_channel_id: 'C_TWO', slack_message_ts: '2.2' },
+        ],
+      },
+    });
+    const slackClient = { chat: { update: jest.fn().mockResolvedValue({ ok: true }) } };
+
+    const result = await runPostExpiry({ db, slackClient, logger: quiet }, NOW);
+
+    expect(result).toEqual({ due: 1, closed: 1 });
+    expect(slackClient.chat.update).toHaveBeenCalledTimes(2);
+    expect(slackClient.chat.update.mock.calls.map((c) => c[0].channel)).toEqual(['C_ONE', 'C_TWO']);
+    // Stamped exactly once — after all cards closed.
+    expect(postUpdates).toEqual([expect.objectContaining({ expired_at: 'NOW' })]);
+  });
+
+  test('a multi-channel post is not stamped if one of its cards fails to close', async () => {
+    const { db, postUpdates } = fakeDb({
+      duePosts: [duePost('post-1')],
+      cardsByPost: {
+        'post-1': [
+          { slack_channel_id: 'C_ONE', slack_message_ts: '1.1' },
+          { slack_channel_id: 'C_TWO', slack_message_ts: '2.2' },
+        ],
+      },
+    });
+    const slackClient = {
+      chat: {
+        update: jest
+          .fn()
+          .mockResolvedValueOnce({ ok: true })
+          .mockRejectedValueOnce(Object.assign(new Error('boom'), { data: { error: 'message_not_found' } })),
+      },
+    };
+
+    const result = await runPostExpiry({ db, slackClient, logger: quiet }, NOW);
+
+    expect(result).toEqual({ due: 1, closed: 0 });
+    expect(slackClient.chat.update).toHaveBeenCalledTimes(2); // both attempted
+    expect(postUpdates).toHaveLength(0); // not stamped — retries next run
   });
 
   test('does nothing when nothing is due', async () => {

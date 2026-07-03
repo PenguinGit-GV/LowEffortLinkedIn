@@ -11,6 +11,7 @@ const { buildSharePayload } = require('../linkedin/posts');
 const { getConnection, sendConnectPrompt } = require('../slack/connectPrompt');
 const { postEphemeralSafely } = require('../slack/ephemeral');
 const { fetchSlackFile } = require('../slack/files');
+const { loadPostCards } = require('../db/postCards');
 
 const CUSTOM_MODAL_CALLBACK_ID = 'share_custom_modal';
 const SHARE_ACTION_PATTERN = /^share_variation_[abc]$/;
@@ -44,34 +45,40 @@ async function handleRevokedToken({ db, config, client }, { userId, channelId })
 }
 
 // Counter segment of the card's context line (§2.3 step 6), plus the
-// nice-to-have ✅ reaction on the first successful share only.
+// nice-to-have ✅ reaction on the first successful share only. A post can have
+// been broadcast to several channels; every card is refreshed so the counter
+// stays in sync everywhere (one card's Slack failure doesn't block the rest).
 async function updateCardCounter({ db, client, logger }, post) {
-  if (!post.slack_channel_id || !post.slack_message_ts) return;
+  const cards = await loadPostCards(db, post);
+  if (cards.length === 0) return;
   const [{ count }] = await db('shares')
     .where({ post_id: post.id, status: 'success' })
     .count();
   const shareCount = Number(count);
-  try {
-    await client.chat.update({
-      channel: post.slack_channel_id,
-      ts: post.slack_message_ts,
-      text: `New post ready to share: ${post.destination_url}`,
-      blocks: buildPostCard({ post, shareCount }),
-    });
-  } catch (err) {
-    logger.warn(`Card counter update failed: ${err.data?.error || err.message}`);
-  }
-  if (shareCount === 1) {
+  const blocks = buildPostCard({ post, shareCount });
+  for (const card of cards) {
     try {
-      await client.reactions.add({
-        channel: post.slack_channel_id,
-        timestamp: post.slack_message_ts,
-        name: 'white_check_mark',
+      await client.chat.update({
+        channel: card.slack_channel_id,
+        ts: card.slack_message_ts,
+        text: `New post ready to share: ${post.destination_url}`,
+        blocks,
       });
     } catch (err) {
-      // The bot can add a given emoji only once; races here are harmless.
-      if (err.data?.error !== 'already_reacted') {
-        logger.warn(`First-share reaction failed: ${err.data?.error || err.message}`);
+      logger.warn(`Card counter update failed: ${err.data?.error || err.message}`);
+    }
+    if (shareCount === 1) {
+      try {
+        await client.reactions.add({
+          channel: card.slack_channel_id,
+          timestamp: card.slack_message_ts,
+          name: 'white_check_mark',
+        });
+      } catch (err) {
+        // The bot can add a given emoji only once; races here are harmless.
+        if (err.data?.error !== 'already_reacted') {
+          logger.warn(`First-share reaction failed: ${err.data?.error || err.message}`);
+        }
       }
     }
   }

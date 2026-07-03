@@ -10,6 +10,7 @@
 const cron = require('node-cron');
 const { WebClient } = require('@slack/web-api');
 const { buildPostCard } = require('../blocks/postCard');
+const { loadPostCards } = require('../db/postCards');
 
 // Due = past its window, still has a live card, and hasn't been closed out
 // yet (expired_at is the idempotency stamp — set only after a successful
@@ -23,8 +24,10 @@ function findPostsToExpire(db, now = new Date()) {
     .whereNotNull('slack_message_ts');
 }
 
-// One pass of the job. The stamp is written only after the card update
-// succeeds, so a failed update retries on the next run; one post's failure
+// One pass of the job. A post can have been broadcast to several channels, so
+// every card is stripped of its buttons. The stamp is written only after all
+// of a post's cards update successfully, so a partial failure retries the
+// whole post on the next run (chat.update is idempotent); one post's failure
 // never blocks the rest.
 async function runPostExpiry({ db, slackClient, logger = console }, now = new Date()) {
   const due = await findPostsToExpire(db, now);
@@ -34,16 +37,31 @@ async function runPostExpiry({ db, slackClient, logger = console }, now = new Da
       const [{ count }] = await db('shares')
         .where({ post_id: post.id, status: 'success' })
         .count();
-      await slackClient.chat.update({
-        channel: post.slack_channel_id,
-        ts: post.slack_message_ts,
-        text: `New post ready to share: ${post.destination_url}`,
-        // expired_at is only a local render hint here — the DB write below is
-        // what actually makes the state durable.
-        blocks: buildPostCard({ post: { ...post, expired_at: now }, shareCount: Number(count) }),
-      });
-      await db('posts').where({ id: post.id }).update({ expired_at: db.fn.now() });
-      closed += 1;
+      const cards = await loadPostCards(db, post);
+      // expired_at is only a local render hint here — the DB write below is
+      // what actually makes the state durable.
+      const blocks = buildPostCard({ post: { ...post, expired_at: now }, shareCount: Number(count) });
+      let allClosed = cards.length > 0;
+      for (const card of cards) {
+        try {
+          await slackClient.chat.update({
+            channel: card.slack_channel_id,
+            ts: card.slack_message_ts,
+            text: `New post ready to share: ${post.destination_url}`,
+            blocks,
+          });
+        } catch (err) {
+          allClosed = false;
+          logger.error(
+            `Post expiry close failed for post ${post.id} card ${card.slack_channel_id}: ` +
+              `${err.data?.error || err.message}`
+          );
+        }
+      }
+      if (allClosed) {
+        await db('posts').where({ id: post.id }).update({ expired_at: db.fn.now() });
+        closed += 1;
+      }
     } catch (err) {
       logger.error(
         `Post expiry close failed for post ${post.id}: ${err.data?.error || err.message}`

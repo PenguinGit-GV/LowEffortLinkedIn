@@ -263,25 +263,35 @@ describe('buildModal', () => {
 
 describe('publishPost', () => {
   function makeDbStub() {
-    const calls = { inserts: [], updates: [], deletes: [] };
-    const db = (table) => ({
-      insert: (row) => ({
-        returning: async () => {
-          calls.inserts.push({ table, row });
-          return [{ id: 'post-uuid-1' }];
-        },
-      }),
-      where: (cond) => ({
-        update: async (patch) => {
-          calls.updates.push({ table, cond, patch });
-          return 1;
-        },
-        del: async () => {
-          calls.deletes.push({ table, cond });
-          return 1;
-        },
-      }),
-    });
+    const calls = { inserts: [], updates: [], deletes: [], cardInserts: [] };
+    const db = (table) => {
+      if (table === 'post_cards') {
+        return {
+          insert: async (rows) => {
+            calls.cardInserts.push({ table, rows });
+            return rows;
+          },
+        };
+      }
+      return {
+        insert: (row) => ({
+          returning: async () => {
+            calls.inserts.push({ table, row });
+            return [{ id: 'post-uuid-1' }];
+          },
+        }),
+        where: (cond) => ({
+          update: async (patch) => {
+            calls.updates.push({ table, cond, patch });
+            return 1;
+          },
+          del: async () => {
+            calls.deletes.push({ table, cond });
+            return 1;
+          },
+        }),
+      };
+    };
     db.calls = calls;
     return db;
   }
@@ -401,7 +411,13 @@ describe('publishPost', () => {
       2,
       expect.objectContaining({ channel: 'C_ADVOCACY2' })
     );
-    // Stores the first broadcast's location
+    // Records a post_cards row for every channel that received the card.
+    expect(db.calls.cardInserts).toHaveLength(1);
+    expect(db.calls.cardInserts[0].rows).toEqual([
+      { post_id: 'post-uuid-1', slack_channel_id: 'C_ADVOCACY1', slack_message_ts: '111.222' },
+      { post_id: 'post-uuid-1', slack_channel_id: 'C_ADVOCACY2', slack_message_ts: '333.444' },
+    ]);
+    // Stores the first broadcast's location as the post's primary card.
     expect(db.calls.updates[0]).toEqual({
       table: 'posts',
       cond: { id: 'post-uuid-1' },
@@ -415,6 +431,7 @@ describe('publishPost', () => {
     const multiConfig = { advocacyChannelIds: ['C_ADVOCACY1', 'C_ADVOCACY2'] };
     const failure = new Error('An API error occurred');
     failure.data = { error: 'channel_not_found' };
+    const warn = jest.fn();
     const client = {
       chat: {
         postMessage: jest
@@ -426,12 +443,22 @@ describe('publishPost', () => {
     };
 
     await publishPost(
-      { db, client, config: multiConfig, logger: { warn: jest.fn() } },
+      { db, client, config: multiConfig, logger: { warn } },
       { parsed, userId: 'U_MARKETER', originChannelId: 'C_ORIGIN' }
     );
 
-    // Post was created and stored despite one channel failing
+    // Post was created and stored despite one channel failing.
     expect(db.calls.updates).toHaveLength(1);
     expect(db.calls.deletes).toHaveLength(0);
+    // Only the channel that succeeded gets a post_cards row.
+    expect(db.calls.cardInserts[0].rows).toEqual([
+      { post_id: 'post-uuid-1', slack_channel_id: 'C_ADVOCACY1', slack_message_ts: '111.222' },
+    ]);
+    // The failure is logged for the operator.
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('C_ADVOCACY2'));
+    // The marketer's confirmation lists only the channel that received the card.
+    const confirmation = client.chat.postEphemeral.mock.calls[0][0].text;
+    expect(confirmation).toContain('<#C_ADVOCACY1>');
+    expect(confirmation).not.toContain('<#C_ADVOCACY2>');
   });
 });

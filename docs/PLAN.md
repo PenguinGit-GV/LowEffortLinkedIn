@@ -318,8 +318,9 @@ CREATE TABLE posts (
   caption_b            TEXT,
   caption_c            TEXT,
   image_slack_file_id  TEXT,                -- Slack file ID of the optional image
-  slack_channel_id     TEXT,                -- where the card was broadcast
-  slack_message_ts     TEXT,                -- card message ts, for chat.update
+  slack_channel_id     TEXT,                -- primary card's channel (first broadcast);
+                                             -- all cards live in post_cards
+  slack_message_ts     TEXT,                -- primary card message ts, for chat.update
   created_by_slack_id  TEXT NOT NULL,
   expires_at           TIMESTAMPTZ,         -- computed at creation (§2.6); marketer's
                                              -- override or DEFAULT_POST_EXPIRY_HOURS
@@ -330,6 +331,19 @@ CREATE TABLE posts (
 
 -- Powers the post-expiry job's "what's due" scan (§2.6).
 CREATE INDEX idx_posts_expires_at ON posts(expires_at) WHERE expired_at IS NULL;
+
+-- One row per broadcast: ADVOCACY_CHANNEL_ID may list several channels, so a
+-- single post fans out to multiple cards. The share counter and expiry job
+-- update every card recorded here.
+CREATE TABLE post_cards (
+  id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  post_id           UUID NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
+  slack_channel_id  TEXT NOT NULL,          -- channel the card was broadcast to
+  slack_message_ts  TEXT NOT NULL,          -- card message ts, for chat.update
+  created_at        TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE INDEX idx_post_cards_post_id ON post_cards(post_id);
 
 CREATE TABLE shares (
   id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),

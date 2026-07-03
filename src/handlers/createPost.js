@@ -6,6 +6,7 @@ const copy = require('../copy');
 const { buildPostCard } = require('../blocks/postCard');
 const { escapeMrkdwn } = require('../mrkdwn');
 const { postEphemeralSafely } = require('../slack/ephemeral');
+const { recordPostCards } = require('../db/postCards');
 const { MAX_POST_EXPIRY_HOURS } = require('../config');
 
 const MODAL_CALLBACK_ID = 'create_post_modal';
@@ -176,10 +177,13 @@ function parseSubmission(values, { defaultExpiryHours } = {}) {
   };
 }
 
-// Runs after ack(): insert → broadcast → store card location → confirm.
-// If the broadcast fails on all channels, the orphaned row is removed so the
-// posts table only ever holds posts that actually have a card. Broadcasts to
-// all channels and stores the first successful post's location for tracking.
+// Runs after ack(): insert → broadcast → record card locations → confirm.
+// Broadcasts to every channel in config.advocacyChannelIds; each successful
+// card's (channel, ts) is recorded in post_cards so the share counter and the
+// expiry job can update all of them. If every channel fails, the orphaned row
+// is removed so the posts table only holds posts that actually have a card. A
+// partial failure still succeeds — the confirmation lists only the channels
+// that received the card, and the failures are logged.
 async function publishPost({ db, client, config, logger }, { parsed, userId, originChannelId }) {
   const { expiry_hours: expiryHours, ...postFields } = parsed;
   const expiresAt = new Date(Date.now() + expiryHours * 60 * 60 * 1000);
@@ -199,39 +203,42 @@ async function publishPost({ db, client, config, logger }, { parsed, userId, ori
         blocks: buildPostCard({ post, shareCount: 0 }),
         unfurl_links: true,
       });
-      broadcasts.push({ channel: channelId, ...broadcast });
+      broadcasts.push({ slack_channel_id: broadcast.channel, slack_message_ts: broadcast.ts });
     } catch (err) {
-      errors.push({
-        channel: channelId,
-        error: err.data?.error || err.message,
-      });
+      errors.push({ channel: channelId, error: err.data?.error || err.message });
     }
   }
 
   if (broadcasts.length === 0) {
     await db('posts').where({ id: postId }).del();
     const channelList = config.advocacyChannelIds.map((c) => `<#${c}>`).join(', ');
-    const reason =
-      errors.some((e) => ['channel_not_found', 'not_in_channel'].includes(e.error)) &&
-      errors.length === config.advocacyChannelIds.length
-        ? `I can't post to ${channelList} — are the channel IDs right and is the app allowed there?`
-        : `Broadcasting failed: ${errors.map((e) => `\`${e.error}\``).join(', ')}.`;
+    const reason = errors.every((e) => ['channel_not_found', 'not_in_channel'].includes(e.error))
+      ? `I can't post to ${channelList} — are the channel IDs right and is the app allowed there?`
+      : `Broadcasting failed: ${errors.map((e) => `\`${e.error}\``).join(', ')}.`;
     await postEphemeralSafely({ client, logger }, originChannelId, userId, `😕 ${reason}`);
     return;
   }
 
-  const firstBroadcast = broadcasts[0];
-  await db('posts')
-    .where({ id: postId })
-    .update({ slack_channel_id: firstBroadcast.channel, slack_message_ts: firstBroadcast.ts });
+  // Record every card that landed, then keep the first as the post's "primary"
+  // for backward-compatible reads and the expiry job's due-scan filter.
+  await recordPostCards(db, postId, broadcasts);
+  await db('posts').where({ id: postId }).update({
+    slack_channel_id: broadcasts[0].slack_channel_id,
+    slack_message_ts: broadcasts[0].slack_message_ts,
+  });
 
-  const channelList = config.advocacyChannelIds.map((c) => `<#${c}>`).join(', ');
-  await postEphemeralSafely(
-    { client, logger },
-    originChannelId,
-    userId,
-    copy.C9(channelList)
-  );
+  // A partial failure is not surfaced to the marketer, but the operator needs
+  // to know a configured channel is misconfigured (e.g. app not invited).
+  if (errors.length > 0) {
+    logger.warn(
+      `Post ${postId} broadcast to ${broadcasts.length}/${config.advocacyChannelIds.length} channels; ` +
+        `failed: ${errors.map((e) => `${e.channel} (${e.error})`).join(', ')}`
+    );
+  }
+
+  // Confirm only the channels that actually received the card.
+  const channelList = broadcasts.map((b) => `<#${b.slack_channel_id}>`).join(', ');
+  await postEphemeralSafely({ client, logger }, originChannelId, userId, copy.C9(channelList));
 }
 
 function registerCreatePost(app, { config, db }) {
