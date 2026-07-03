@@ -7,30 +7,24 @@ describe('buildSharePayload', () => {
     personId: 'AbC123',
     commentary: 'Great read!',
     destinationUrl: 'https://example.com/post',
-    articleTitle: 'A Great Read — Example Blog',
   };
 
-  test('link-only post uses content.article with the given title and untouched commentary', () => {
+  test('link-only post has no content field and lets LinkedIn unfurl the URL from commentary', () => {
     const payload = buildSharePayload({ ...base, imageUrn: null });
     expect(payload).toEqual({
       author: 'urn:li:person:AbC123',
-      commentary: 'Great read!',
+      commentary: 'Great read!\n\nhttps://example.com/post',
       visibility: 'PUBLIC',
       distribution: { feedDistribution: 'MAIN_FEED' },
       lifecycleState: 'PUBLISHED',
       isReshareDisabledByAuthor: false,
-      content: {
-        article: { source: 'https://example.com/post', title: 'A Great Read — Example Blog' },
-      },
     });
   });
 
-  test('image post uses content.media, appends the URL to the commentary, and carries no title', () => {
+  test('image post uses content.media and appends the URL to the commentary', () => {
     const payload = buildSharePayload({ ...base, imageUrn: 'urn:li:image:xyz' });
     expect(payload.content).toEqual({ media: { id: 'urn:li:image:xyz' } });
     expect(payload.commentary).toBe('Great read!\n\nhttps://example.com/post');
-    // content is a oneOf — never both.
-    expect(payload.content.article).toBeUndefined();
   });
 });
 

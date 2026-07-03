@@ -8,7 +8,6 @@ const copy = require('../copy');
 const { buildPostCard } = require('../blocks/postCard');
 const { decryptToken } = require('../crypto/tokenCipher');
 const { buildSharePayload } = require('../linkedin/posts');
-const { hostnameTitle } = require('../linkedin/pageTitle');
 const { getConnection, sendConnectPrompt } = require('../slack/connectPrompt');
 const { postEphemeralSafely } = require('../slack/ephemeral');
 const { fetchSlackFile } = require('../slack/files');
@@ -203,10 +202,15 @@ async function runSharePipeline(
       commentary,
       destinationUrl: post.destination_url,
       imageUrn,
-      // article_title is resolved once at /create-post time; the hostname
-      // fallback here only covers posts created before that column existed.
-      articleTitle: post.article_title || hostnameTitle(post.destination_url),
     });
+    // Decision #19 relies on LinkedIn's own crawler unfurling the URL
+    // embedded in commentary — unverified against a real destination site
+    // as of this writing. Logged so a "no preview" report can be checked
+    // against what actually shipped without re-deriving it from the DB.
+    logger.log(
+      `LinkedIn payload for post ${postId}: commentary ${payload.commentary.length} chars, ` +
+        `content=${payload.content ? Object.keys(payload.content)[0] : 'none (link unfurl expected)'}`
+    );
 
     let postUrn = null;
     try {
@@ -379,16 +383,17 @@ function registerShareHandlers(app, { config, db, shareClient, fetchFile }) {
       });
       return;
     }
-    // With an image, the destination URL is appended to the commentary (§4),
-    // so caption + separator + URL must fit the same limit.
-    if (post?.image_slack_file_id) {
+    // The destination URL is always appended to the commentary (§4 — lets
+    // LinkedIn's own crawler unfurl it), so caption + separator + URL must
+    // fit the same limit, regardless of whether an image is attached.
+    if (post?.destination_url) {
       const total = text.length + 2 + post.destination_url.length;
       if (total > CAPTION_MAX) {
         await ack({
           response_action: 'errors',
           errors: {
             custom_caption:
-              `This post has an image, so the link gets appended to your caption — ` +
+              `The destination link gets appended to your caption on LinkedIn — ` +
               `together they're ${total} characters; the limit is ${CAPTION_MAX}. Please trim it.`,
           },
         });

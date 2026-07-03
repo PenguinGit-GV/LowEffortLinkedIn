@@ -84,7 +84,21 @@ describe('parseSubmission', () => {
     expect(errors.destination_url).toMatch(/too long/);
   });
 
-  test('rejects a caption that would overflow the LinkedIn limit once the URL is appended (image posts)', () => {
+  test('rejects a caption that would overflow the LinkedIn limit once the URL is appended', () => {
+    // The URL is always appended to the caption now (Decision #19 — lets
+    // LinkedIn's own crawler unfurl it), image or not.
+    const url = `https://example.com/${'p'.repeat(100)}`;
+    const { errors } = parseSubmission(
+      values({
+        destination_url: { value: { value: url } },
+        caption_b: { value: { value: 'y'.repeat(CAPTION_MAX - 50) } },
+      }),
+      OPTS
+    );
+    expect(errors.caption_b).toMatch(/appended/);
+  });
+
+  test('the same overflow is rejected with an image attached too', () => {
     const url = `https://example.com/${'p'.repeat(100)}`;
     const { errors } = parseSubmission(
       values({
@@ -94,19 +108,7 @@ describe('parseSubmission', () => {
       }),
       OPTS
     );
-    expect(errors.caption_b).toMatch(/image/);
-  });
-
-  test('the same caption+URL combination is fine without an image', () => {
-    const url = `https://example.com/${'p'.repeat(100)}`;
-    const { errors } = parseSubmission(
-      values({
-        destination_url: { value: { value: url } },
-        caption_b: { value: { value: 'y'.repeat(CAPTION_MAX - 50) } },
-      }),
-      OPTS
-    );
-    expect(errors).toBeNull();
+    expect(errors.caption_b).toMatch(/appended/);
   });
 
   test('rejects a caption that only overflows once mrkdwn-escaped', () => {

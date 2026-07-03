@@ -153,12 +153,16 @@ describe('runSharePipeline', () => {
     const { accessToken, payload } = d.shareClient.createPost.mock.calls[0][0];
     expect(accessToken).toBe('linkedin-token');
     expect(payload.author).toBe('urn:li:person:PERSON1');
-    expect(payload.commentary).toBe('Caption A text');
-    // POST has no article_title (predates the column) — falls back to the
-    // hostname rather than sending an empty title to LinkedIn.
-    expect(payload.content).toEqual({
-      article: { source: 'https://example.com/blog', title: 'example.com' },
-    });
+    // The destination URL rides in the commentary text so LinkedIn's own
+    // crawler unfurls it — no content.article, no server-side title fetch.
+    expect(payload.commentary).toBe('Caption A text\n\nhttps://example.com/blog');
+    expect(payload.content).toBeUndefined();
+    // Diagnostic line so a "no preview" report can be checked against what
+    // actually shipped, without re-deriving it from the DB (Decision #19 is
+    // unverified against a real destination site as of this writing).
+    expect(d.logger.log).toHaveBeenCalledWith(
+      expect.stringContaining('link unfurl expected')
+    );
 
     expect(d._dbParts.shareInserts).toEqual([
       expect.objectContaining({
@@ -224,28 +228,24 @@ describe('runSharePipeline', () => {
   test('variation CUSTOM posts the edited text and stores custom_text', async () => {
     const d = deps();
     await runSharePipeline(d, { ...JOB, variation: 'CUSTOM', customText: 'My own words' });
-    expect(d.shareClient.createPost.mock.calls[0][0].payload.commentary).toBe('My own words');
+    expect(d.shareClient.createPost.mock.calls[0][0].payload.commentary).toBe(
+      'My own words\n\nhttps://example.com/blog'
+    );
     expect(d._dbParts.shareInserts[0]).toEqual(
       expect.objectContaining({ variation: 'CUSTOM', custom_text: 'My own words' })
     );
   });
 
-  test('uses the post-level article_title when it is set, instead of the hostname', async () => {
+  test('a post-level article_title (from a pre-existing row) is not used in the payload', async () => {
+    // article_title is still fetched/stored at /create-post time, but the
+    // LinkedIn payload no longer builds a content.article from it — the
+    // destination URL travels in the commentary and LinkedIn unfurls it.
     const post = { ...POST, article_title: 'A Great Read — Example Blog' };
     const d = deps({ dbParts: fakeDb({ post }) });
     await runSharePipeline(d, JOB);
-    expect(d.shareClient.createPost.mock.calls[0][0].payload.content).toEqual({
-      article: { source: 'https://example.com/blog', title: 'A Great Read — Example Blog' },
-    });
-  });
-
-  test('an empty-string article_title (backfilled legacy row) still falls back to the hostname', async () => {
-    const post = { ...POST, article_title: '' };
-    const d = deps({ dbParts: fakeDb({ post }) });
-    await runSharePipeline(d, JOB);
-    expect(d.shareClient.createPost.mock.calls[0][0].payload.content.article.title).toBe(
-      'example.com'
-    );
+    const { payload } = d.shareClient.createPost.mock.calls[0][0];
+    expect(payload.content).toBeUndefined();
+    expect(payload.commentary).toBe('Caption A text\n\nhttps://example.com/blog');
   });
 
   test('not connected → connect prompt, no LinkedIn call, no share row', async () => {
@@ -507,7 +507,33 @@ describe('registered handlers', () => {
     });
     const ackArg = ack.mock.calls[0][0];
     expect(ackArg.response_action).toBe('errors');
-    expect(ackArg.errors.custom_caption).toContain('image');
+    expect(ackArg.errors.custom_caption).toContain('appended');
+  });
+
+  test('the same caption+URL budget applies to link-only posts too', async () => {
+    // The URL is always appended to the caption now (Decision #19), so this
+    // check can no longer be gated on an image being attached.
+    const post = {
+      ...POST,
+      image_slack_file_id: null,
+      destination_url: `https://example.com/${'x'.repeat(200)}`,
+    };
+    const handlers = captureHandlers(fakeDb({ post }));
+    const [, fn] = handlers.views[0];
+    const ack = jest.fn();
+    await fn({
+      ack,
+      body: { user: { id: 'U777' } },
+      view: {
+        private_metadata: JSON.stringify({ post_id: 'post-1', channel_id: 'C123' }),
+        state: { values: { custom_caption: { value: { value: 'y'.repeat(2900) } } } },
+      },
+      client: fakeClient(),
+      logger: quietLogger,
+    });
+    const ackArg = ack.mock.calls[0][0];
+    expect(ackArg.response_action).toBe('errors');
+    expect(ackArg.errors.custom_caption).toContain('appended');
   });
 
   test('edit button: a DB failure still gives the user feedback', async () => {
