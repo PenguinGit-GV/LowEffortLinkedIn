@@ -7,10 +7,9 @@
 // so a click landing in the gap between cron runs is still blocked; this job
 // is what makes that visible on the card itself.
 
-const cron = require('node-cron');
-const { WebClient } = require('@slack/web-api');
 const { buildPostCard } = require('../blocks/postCard');
 const { loadPostCards } = require('../db/postCards');
+const { startCronJob } = require('./cronJob');
 
 // Due = past its window, still has a live card, and hasn't been closed out
 // yet (expired_at is the idempotency stamp — set only after a successful
@@ -78,25 +77,12 @@ async function runPostExpiry({ db, slackClient, logger = console }, now = new Da
 // are hours-scale, so this needs finer granularity than the daily token
 // reminder. Returns the task so the caller can stop() it on shutdown.
 function startPostExpiryJob({ config, db, logger = console }, overrides = {}) {
-  const cronLib = overrides.cronLib || cron;
-  if (!cronLib.validate(config.postExpiryCron)) {
-    throw new Error(`POST_EXPIRY_CRON is not a valid cron expression: "${config.postExpiryCron}"`);
-  }
-  const slackClient =
-    overrides.slackClient ||
-    new WebClient(config.slackBotToken, {
-      retryConfig: { retries: 2, minTimeout: 500, maxTimeout: 2000 },
-    });
-
-  return cronLib.schedule(
-    config.postExpiryCron,
-    () => {
-      runPostExpiry({ db, slackClient, logger }).catch((err) =>
-        logger.error('Post expiry job failed:', err)
-      );
-    },
-    { timezone: 'Etc/UTC' }
-  );
+  return startCronJob({ config, db, logger }, overrides, {
+    envVarName: 'POST_EXPIRY_CRON',
+    cronExpression: config.postExpiryCron,
+    run: runPostExpiry,
+    label: 'Post expiry',
+  });
 }
 
 module.exports = { findPostsToExpire, runPostExpiry, startPostExpiryJob };

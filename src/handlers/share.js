@@ -13,10 +13,12 @@ const { postEphemeralSafely } = require('../slack/ephemeral');
 const { fetchSlackFile } = require('../slack/files');
 const { loadPostCards } = require('../db/postCards');
 
+// LinkedIn's commentary limit and the caption+URL budget rule — the same
+// shared module the /create-post modal enforces, so the two can't drift.
+const { CAPTION_MAX, captionWithUrlError } = require('../linkedin/limits');
+
 const CUSTOM_MODAL_CALLBACK_ID = 'share_custom_modal';
 const SHARE_ACTION_PATTERN = /^share_variation_[abc]$/;
-// LinkedIn's commentary limit — same cap the /create-post modal enforces.
-const CAPTION_MAX = 3000;
 const PG_UNIQUE_VIOLATION = '23505';
 
 // Layer 1 of the idempotency guard (§2.3 step 2): absorbs double-clicks
@@ -396,23 +398,15 @@ function registerShareHandlers(app, { config, db, shareClient, fetchFile }) {
 
     // The destination URL is always appended to the commentary (§4 — lets
     // LinkedIn's own crawler unfurl it), so caption + separator + URL must
-    // fit the same limit, regardless of whether an image is attached. The
-    // URL comes from private_metadata (stashed at modal-open time) so this
-    // pre-ack path stays free of DB reads — everything that needs the DB
-    // runs after ack(), outside Slack's 3-second window.
-    if (meta.destination_url) {
-      const total = text.length + 2 + meta.destination_url.length;
-      if (total > CAPTION_MAX) {
-        await ack({
-          response_action: 'errors',
-          errors: {
-            custom_caption:
-              `The destination link gets appended to your caption on LinkedIn — ` +
-              `together they're ${total} characters; the limit is ${CAPTION_MAX}. Please trim it.`,
-          },
-        });
-        return;
-      }
+    // fit the same limit, regardless of whether an image is attached
+    // (shared rule: src/linkedin/limits.js). The URL comes from
+    // private_metadata (stashed at modal-open time) so this pre-ack path
+    // stays free of DB reads — everything that needs the DB runs after
+    // ack(), outside Slack's 3-second window.
+    const budgetError = captionWithUrlError(text, meta.destination_url);
+    if (budgetError) {
+      await ack({ response_action: 'errors', errors: { custom_caption: budgetError } });
+      return;
     }
     await ack();
 

@@ -78,15 +78,16 @@ function loadConfig(env = process.env) {
   }
 
   // Default sharing window for a new post; the marketer can override this
-  // per-post in /create-post, bounded by the same MAX_POST_EXPIRY_HOURS.
+  // per-post in /create-post, bounded by the same 1–MAX_POST_EXPIRY_HOURS
+  // rule that modal advertises and enforces.
   const defaultPostExpiryHours = Number.parseFloat(env.DEFAULT_POST_EXPIRY_HOURS || '8');
   if (
     !Number.isFinite(defaultPostExpiryHours) ||
-    defaultPostExpiryHours <= 0 ||
+    defaultPostExpiryHours < 1 ||
     defaultPostExpiryHours > MAX_POST_EXPIRY_HOURS
   ) {
     throw new Error(
-      `DEFAULT_POST_EXPIRY_HOURS must be a number between 0 and ${MAX_POST_EXPIRY_HOURS}, ` +
+      `DEFAULT_POST_EXPIRY_HOURS must be a number between 1 and ${MAX_POST_EXPIRY_HOURS}, ` +
         `got "${env.DEFAULT_POST_EXPIRY_HOURS}"`
     );
   }

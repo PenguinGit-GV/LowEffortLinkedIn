@@ -6,11 +6,9 @@
 // clears the stamp (§2.2 step 4), which re-arms the reminder for the fresh
 // token's window.
 
-const cron = require('node-cron');
-const { WebClient } = require('@slack/web-api');
-
 const copy = require('../copy');
-const { buildConnectUrl } = require('./../slack/connectPrompt');
+const { buildConnectUrl } = require('../slack/connectPrompt');
+const { startCronJob } = require('./cronJob');
 
 const REMINDER_WINDOW_DAYS = 7;
 // The DM sits in an inbox, so its reconnect link outlives the token itself
@@ -92,27 +90,12 @@ async function runExpiryReminder({ db, config, slackClient, logger = console }, 
 // Schedules the daily run (config.reminderCron, UTC). Returns the task so the
 // caller can stop() it on shutdown. overrides let tests stub cron and Slack.
 function startExpiryReminderJob({ config, db, logger = console }, overrides = {}) {
-  const cronLib = overrides.cronLib || cron;
-  if (!cronLib.validate(config.reminderCron)) {
-    throw new Error(`REMINDER_CRON is not a valid cron expression: "${config.reminderCron}"`);
-  }
-  const slackClient =
-    overrides.slackClient ||
-    new WebClient(config.slackBotToken, {
-      // Bounded like the OAuth routes' client — a Slack outage shouldn't pin
-      // a job run for half an hour.
-      retryConfig: { retries: 2, minTimeout: 500, maxTimeout: 2000 },
-    });
-
-  return cronLib.schedule(
-    config.reminderCron,
-    () => {
-      runExpiryReminder({ db, config, slackClient, logger }).catch((err) =>
-        logger.error('Expiry reminder job failed:', err)
-      );
-    },
-    { timezone: 'Etc/UTC' }
-  );
+  return startCronJob({ config, db, logger }, overrides, {
+    envVarName: 'REMINDER_CRON',
+    cronExpression: config.reminderCron,
+    run: runExpiryReminder,
+    label: 'Expiry reminder',
+  });
 }
 
 module.exports = {

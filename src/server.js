@@ -1,5 +1,4 @@
 const { App, ExpressReceiver } = require('@slack/bolt');
-const { WebClient } = require('@slack/web-api');
 
 const { registerCreatePost } = require('./handlers/createPost');
 const { registerDisconnect } = require('./handlers/disconnect');
@@ -13,6 +12,7 @@ const { registerAdminApi } = require('./admin/api');
 const { registerAdminPages } = require('./admin/pages');
 const { registerAdminOps } = require('./admin/ops');
 const { createReloadController } = require('./admin/reload');
+const { createBoundedSlackClient, BOUNDED_RETRY_CONFIG } = require('./slack/client');
 
 // Builds the Bolt app on an ExpressReceiver so the LinkedIn OAuth routes
 // and /healthz share the single HTTP server (PLAN.md §3).
@@ -34,6 +34,12 @@ function createServer(config, db, overrides = {}) {
     ...(overrides.authorize
       ? { authorize: overrides.authorize }
       : { token: config.slackBotToken }),
+    // Bolt's per-handler client (the `client` every action/command/view
+    // handler receives) otherwise ships @slack/web-api's default retry
+    // policy — ten retries over ~30 minutes. During a Slack incident that
+    // would pin a share pipeline (and its in-flight dedupe lock) for the
+    // whole outage; bound it like every other Slack client in this app.
+    clientOptions: { retryConfig: BOUNDED_RETRY_CONFIG },
     ...(overrides.logLevel ? { logLevel: overrides.logLevel } : {}),
   });
 
@@ -59,15 +65,9 @@ function createServer(config, db, overrides = {}) {
   registerDisconnect(app, { db });
   registerStats(app, { db });
   registerConnectPromptAction(app);
-  // Dedicated client with tightly bounded retries: these Slack calls are
-  // best-effort (OAuth notifications, an admin health probe), and the
-  // default policy (ten retries over ~30 minutes) would keep a handler alive
-  // across a Slack outage.
-  const slackClient =
-    overrides.slackClient ||
-    new WebClient(config.slackBotToken, {
-      retryConfig: { retries: 2, minTimeout: 500, maxTimeout: 2000 },
-    });
+  // Dedicated client for the non-Bolt call sites (OAuth notifications, the
+  // admin health probe) — same bounded retry policy as everything else.
+  const slackClient = overrides.slackClient || createBoundedSlackClient(config.slackBotToken);
   registerAuthRoutes(receiver.router, {
     config,
     db,

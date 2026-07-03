@@ -5,6 +5,7 @@
 
 const crypto = require('crypto');
 const axios = require('axios');
+const { COMMENTARY_URL_SEPARATOR } = require('./limits');
 
 const POSTS_URL = 'https://api.linkedin.com/rest/posts';
 const IMAGES_URL = 'https://api.linkedin.com/rest/images';
@@ -28,7 +29,9 @@ const HTTP_TIMEOUT_MS = 15_000;
 function buildSharePayload({ personId, commentary, destinationUrl, imageUrn }) {
   const base = {
     author: `urn:li:person:${personId}`,
-    commentary: `${commentary}\n\n${destinationUrl}`,
+    // Same separator the modals' caption+URL budget validation assumes
+    // (limits.js) — the two must stay in lockstep.
+    commentary: `${commentary}${COMMENTARY_URL_SEPARATOR}${destinationUrl}`,
     visibility: 'PUBLIC',
     distribution: { feedDistribution: 'MAIN_FEED' },
     lifecycleState: 'PUBLISHED',
