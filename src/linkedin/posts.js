@@ -10,35 +10,34 @@ const POSTS_URL = 'https://api.linkedin.com/rest/posts';
 const IMAGES_URL = 'https://api.linkedin.com/rest/images';
 const HTTP_TIMEOUT_MS = 15_000;
 
-// content is a oneOf: an article OR media, never both. With an image the
-// destination URL rides in the commentary as a trailing line so the link
-// still travels with the post (§4).
+// content is a oneOf: media OR nothing — never our own article attachment.
+// The destination URL always rides as a trailing line in the commentary
+// text; LinkedIn auto-detects a bare URL there and unfurls it itself via its
+// own crawler, the same as when a person pastes a link into the share box.
 //
-// LinkedIn's live Posts API rejects content.article without a title (PLAN.md
-// §10's schema-drift risk, confirmed live). articleTitle is resolved once at
-// /create-post time (src/linkedin/pageTitle.js — the page's real <title>,
-// falling back to the hostname) and passed in here as plain text; this
-// module has no opinion on where it came from.
-function buildSharePayload({ personId, commentary, destinationUrl, imageUrn, articleTitle }) {
+// This used to build an explicit `content.article` (with `source` +
+// `title`) instead. That required us to fetch the destination page's real
+// <title> server-side (src/linkedin/pageTitle.js) — which reliably failed
+// for real destination sites: cloud-hosting IP ranges (Railway included)
+// are commonly blocked/challenged by WAFs like Cloudflare on IP reputation
+// alone, independent of headers, so no amount of User-Agent/header tuning
+// on our end could fix it. LinkedIn's own crawler runs from LinkedIn's
+// infrastructure and is one of the most widely allowlisted bots on the
+// web, so letting it do the unfurl sidesteps the problem entirely instead
+// of trying to disguise our own fetch.
+function buildSharePayload({ personId, commentary, destinationUrl, imageUrn }) {
   const base = {
     author: `urn:li:person:${personId}`,
-    commentary,
+    commentary: `${commentary}\n\n${destinationUrl}`,
     visibility: 'PUBLIC',
     distribution: { feedDistribution: 'MAIN_FEED' },
     lifecycleState: 'PUBLISHED',
     isReshareDisabledByAuthor: false,
   };
   if (imageUrn) {
-    return {
-      ...base,
-      commentary: `${commentary}\n\n${destinationUrl}`,
-      content: { media: { id: imageUrn } },
-    };
+    return { ...base, content: { media: { id: imageUrn } } };
   }
-  return {
-    ...base,
-    content: { article: { source: destinationUrl, title: articleTitle } },
-  };
+  return base;
 }
 
 // Client for the per-share LinkedIn calls. In mock mode nothing leaves the

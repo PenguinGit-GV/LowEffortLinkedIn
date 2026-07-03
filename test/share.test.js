@@ -153,12 +153,10 @@ describe('runSharePipeline', () => {
     const { accessToken, payload } = d.shareClient.createPost.mock.calls[0][0];
     expect(accessToken).toBe('linkedin-token');
     expect(payload.author).toBe('urn:li:person:PERSON1');
-    expect(payload.commentary).toBe('Caption A text');
-    // POST has no article_title (predates the column) — falls back to the
-    // hostname rather than sending an empty title to LinkedIn.
-    expect(payload.content).toEqual({
-      article: { source: 'https://example.com/blog', title: 'example.com' },
-    });
+    // The destination URL rides in the commentary text so LinkedIn's own
+    // crawler unfurls it — no content.article, no server-side title fetch.
+    expect(payload.commentary).toBe('Caption A text\n\nhttps://example.com/blog');
+    expect(payload.content).toBeUndefined();
 
     expect(d._dbParts.shareInserts).toEqual([
       expect.objectContaining({
@@ -224,28 +222,24 @@ describe('runSharePipeline', () => {
   test('variation CUSTOM posts the edited text and stores custom_text', async () => {
     const d = deps();
     await runSharePipeline(d, { ...JOB, variation: 'CUSTOM', customText: 'My own words' });
-    expect(d.shareClient.createPost.mock.calls[0][0].payload.commentary).toBe('My own words');
+    expect(d.shareClient.createPost.mock.calls[0][0].payload.commentary).toBe(
+      'My own words\n\nhttps://example.com/blog'
+    );
     expect(d._dbParts.shareInserts[0]).toEqual(
       expect.objectContaining({ variation: 'CUSTOM', custom_text: 'My own words' })
     );
   });
 
-  test('uses the post-level article_title when it is set, instead of the hostname', async () => {
+  test('a post-level article_title (from a pre-existing row) is not used in the payload', async () => {
+    // article_title is still fetched/stored at /create-post time, but the
+    // LinkedIn payload no longer builds a content.article from it — the
+    // destination URL travels in the commentary and LinkedIn unfurls it.
     const post = { ...POST, article_title: 'A Great Read — Example Blog' };
     const d = deps({ dbParts: fakeDb({ post }) });
     await runSharePipeline(d, JOB);
-    expect(d.shareClient.createPost.mock.calls[0][0].payload.content).toEqual({
-      article: { source: 'https://example.com/blog', title: 'A Great Read — Example Blog' },
-    });
-  });
-
-  test('an empty-string article_title (backfilled legacy row) still falls back to the hostname', async () => {
-    const post = { ...POST, article_title: '' };
-    const d = deps({ dbParts: fakeDb({ post }) });
-    await runSharePipeline(d, JOB);
-    expect(d.shareClient.createPost.mock.calls[0][0].payload.content.article.title).toBe(
-      'example.com'
-    );
+    const { payload } = d.shareClient.createPost.mock.calls[0][0];
+    expect(payload.content).toBeUndefined();
+    expect(payload.commentary).toBe('Caption A text\n\nhttps://example.com/blog');
   });
 
   test('not connected → connect prompt, no LinkedIn call, no share row', async () => {
