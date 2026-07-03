@@ -56,12 +56,23 @@ function fakeDb({
   existingShare = null,
   successCount = 1,
   shareInsertError = null,
+  cards = null,
 } = {}) {
   const shareInserts = [];
   const userUpdates = [];
+  // Default to a single card mirroring the post's primary columns, so
+  // single-channel behavior is unchanged; pass `cards` to exercise fan-out.
+  const postCards =
+    cards ||
+    (post.slack_channel_id && post.slack_message_ts
+      ? [{ slack_channel_id: post.slack_channel_id, slack_message_ts: post.slack_message_ts }]
+      : []);
   const db = (table) => {
     if (table === 'posts') {
       return { where: () => ({ first: async () => post }) };
+    }
+    if (table === 'post_cards') {
+      return { where: () => ({ select: async () => postCards }) };
     }
     if (table === 'shares') {
       return {
@@ -178,6 +189,36 @@ describe('runSharePipeline', () => {
     await runSharePipeline(d, JOB);
     expect(d.client.reactions.add).not.toHaveBeenCalled();
     expect(JSON.stringify(d.client.chat.update.mock.calls[0][0].blocks)).toContain('✅ 2 shares');
+  });
+
+  test('multi-channel post: every card gets the counter update and first-share reaction', async () => {
+    const cards = [
+      { slack_channel_id: 'C_ONE', slack_message_ts: '1.1' },
+      { slack_channel_id: 'C_TWO', slack_message_ts: '2.2' },
+    ];
+    const d = deps({ dbParts: fakeDb({ cards }) });
+    await runSharePipeline(d, JOB);
+
+    expect(d.client.chat.update).toHaveBeenCalledTimes(2);
+    const updatedChannels = d.client.chat.update.mock.calls.map((c) => c[0].channel);
+    expect(updatedChannels).toEqual(['C_ONE', 'C_TWO']);
+    // First successful share → ✅ reaction on each card.
+    expect(d.client.reactions.add).toHaveBeenCalledTimes(2);
+  });
+
+  test('one card failing to update does not block the others', async () => {
+    const cards = [
+      { slack_channel_id: 'C_ONE', slack_message_ts: '1.1' },
+      { slack_channel_id: 'C_TWO', slack_message_ts: '2.2' },
+    ];
+    const client = fakeClient();
+    client.chat.update
+      .mockRejectedValueOnce(Object.assign(new Error('boom'), { data: { error: 'message_not_found' } }))
+      .mockResolvedValueOnce({ ok: true });
+    const d = deps({ dbParts: fakeDb({ cards }), client });
+    await runSharePipeline(d, JOB);
+
+    expect(d.client.chat.update).toHaveBeenCalledTimes(2); // both attempted despite the first failing
   });
 
   test('variation CUSTOM posts the edited text and stores custom_text', async () => {

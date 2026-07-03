@@ -22,6 +22,7 @@ describe('loadConfig', () => {
   test('parses a valid environment', () => {
     const config = loadConfig(validEnv());
     expect(config.marketerSlackIds).toEqual(['U111', 'U222']);
+    expect(config.advocacyChannelIds).toEqual(['C123']);
     expect(config.tokenEncryptionKey.length).toBe(32);
     expect(config.linkedinMockMode).toBe(true);
     expect(config.publicBaseUrl).toBe('https://example.up.railway.app'); // trailing slash stripped
@@ -35,6 +36,17 @@ describe('loadConfig', () => {
   test('fails fast when MARKETER_SLACK_IDS is only whitespace/commas', () => {
     expect(() => loadConfig(validEnv({ MARKETER_SLACK_IDS: ' , ,' }))).toThrow(
       /MARKETER_SLACK_IDS/
+    );
+  });
+
+  test('parses multiple comma-separated advocacy channel IDs', () => {
+    const config = loadConfig(validEnv({ ADVOCACY_CHANNEL_ID: 'C123, C456, C789' }));
+    expect(config.advocacyChannelIds).toEqual(['C123', 'C456', 'C789']);
+  });
+
+  test('fails fast when ADVOCACY_CHANNEL_ID is only whitespace/commas', () => {
+    expect(() => loadConfig(validEnv({ ADVOCACY_CHANNEL_ID: ' , ,' }))).toThrow(
+      /ADVOCACY_CHANNEL_ID/
     );
   });
 

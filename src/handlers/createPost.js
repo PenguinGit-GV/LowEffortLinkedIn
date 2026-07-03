@@ -6,6 +6,7 @@ const copy = require('../copy');
 const { buildPostCard } = require('../blocks/postCard');
 const { escapeMrkdwn } = require('../mrkdwn');
 const { postEphemeralSafely } = require('../slack/ephemeral');
+const { recordPostCards } = require('../db/postCards');
 const { fetchArticleTitle: defaultFetchArticleTitle } = require('../linkedin/pageTitle');
 const { MAX_POST_EXPIRY_HOURS } = require('../config');
 
@@ -177,10 +178,14 @@ function parseSubmission(values, { defaultExpiryHours } = {}) {
   };
 }
 
-// Runs after ack(): resolve the LinkedIn article title → insert → broadcast
-// → store card location → confirm. If the broadcast fails, the orphaned row
-// is removed so the posts table only ever holds posts that actually have a
-// card.
+// Runs after ack(): resolve the LinkedIn article title → insert → broadcast →
+// record card locations → confirm. Broadcasts to every channel in
+// config.advocacyChannelIds; each successful card's (channel, ts) is recorded
+// in post_cards so the share counter and the expiry job can update all of
+// them. If every channel fails, the orphaned row is removed so the posts table
+// only holds posts that actually have a card. A partial failure still
+// succeeds — the confirmation lists only the channels that received the card,
+// and the failures are logged.
 async function publishPost(
   { db, client, config, logger, fetchArticleTitle = defaultFetchArticleTitle },
   { parsed, userId, originChannelId }
@@ -207,34 +212,53 @@ async function publishPost(
     expires_at: expiresAt,
     article_title: articleTitle,
   };
-  let broadcast;
-  try {
-    broadcast = await client.chat.postMessage({
-      channel: config.advocacyChannelId,
-      text: `New post ready to share: ${parsed.destination_url}`,
-      blocks: buildPostCard({ post, shareCount: 0 }),
-      unfurl_links: true,
-    });
-  } catch (err) {
+  const broadcasts = [];
+  const errors = [];
+
+  for (const channelId of config.advocacyChannelIds) {
+    try {
+      const broadcast = await client.chat.postMessage({
+        channel: channelId,
+        text: `New post ready to share: ${parsed.destination_url}`,
+        blocks: buildPostCard({ post, shareCount: 0 }),
+        unfurl_links: true,
+      });
+      broadcasts.push({ slack_channel_id: broadcast.channel, slack_message_ts: broadcast.ts });
+    } catch (err) {
+      errors.push({ channel: channelId, error: err.data?.error || err.message });
+    }
+  }
+
+  if (broadcasts.length === 0) {
     await db('posts').where({ id: postId }).del();
-    const reason =
-      err.data?.error === 'channel_not_found' || err.data?.error === 'not_in_channel'
-        ? `I can't post to <#${config.advocacyChannelId}> — is the channel ID right and the app allowed there?`
-        : `Broadcasting failed: \`${err.data?.error || err.message}\`.`;
+    const channelList = config.advocacyChannelIds.map((c) => `<#${c}>`).join(', ');
+    const reason = errors.every((e) => ['channel_not_found', 'not_in_channel'].includes(e.error))
+      ? `I can't post to ${channelList} — are the channel IDs right and is the app allowed there?`
+      : `Broadcasting failed: ${errors.map((e) => `\`${e.error}\``).join(', ')}.`;
     await postEphemeralSafely({ client, logger }, originChannelId, userId, `😕 ${reason}`);
     return;
   }
 
-  await db('posts')
-    .where({ id: postId })
-    .update({ slack_channel_id: broadcast.channel, slack_message_ts: broadcast.ts });
+  // Record every card that landed, then keep the first as the post's "primary"
+  // for backward-compatible reads and the expiry job's due-scan filter.
+  await recordPostCards(db, postId, broadcasts);
+  await db('posts').where({ id: postId }).update({
+    slack_channel_id: broadcasts[0].slack_channel_id,
+    slack_message_ts: broadcasts[0].slack_message_ts,
+  });
 
-  await postEphemeralSafely(
-    { client, logger },
-    originChannelId,
-    userId,
-    copy.C9(`<#${config.advocacyChannelId}>`)
-  );
+  // A partial failure is not surfaced to the marketer, but the operator needs
+  // to know a configured channel is misconfigured (e.g. app not invited).
+  if (errors.length > 0) {
+    logger.warn(
+      `Post ${postId} broadcast to ${broadcasts.length}/${config.advocacyChannelIds.length} channels; ` +
+        `failed: ${errors.map((e) => `${e.channel} (${e.error})`).join(', ')}`
+    );
+  }
+
+  // Confirm only the channels that actually received the card.
+  const channelList = broadcasts.map((b) => `<#${b.slack_channel_id}>`).join(', ');
+  await postEphemeralSafely({ client, logger }, originChannelId, userId, copy.C9(channelList));
 }
 
 function registerCreatePost(app, { config, db, fetchArticleTitle }) {

@@ -45,6 +45,14 @@ function loadConfig(env = process.env) {
     throw new Error('MARKETER_SLACK_IDS must contain at least one Slack user ID');
   }
 
+  const advocacyChannelIds = advocacyChannelId
+    .split(',')
+    .map((id) => id.trim())
+    .filter(Boolean);
+  if (advocacyChannelIds.length === 0) {
+    throw new Error('ADVOCACY_CHANNEL_ID must contain at least one channel ID');
+  }
+
   const tokenEncryptionKey = Buffer.from(tokenEncryptionKeyB64, 'base64');
   if (tokenEncryptionKey.length !== 32) {
     throw new Error(
@@ -75,7 +83,7 @@ function loadConfig(env = process.env) {
     slackBotToken,
     slackSigningSecret,
     marketerSlackIds,
-    advocacyChannelId,
+    advocacyChannelIds,
     databaseUrl,
     oauthStateSecret,
     tokenEncryptionKey,
