@@ -1,7 +1,7 @@
 # LowEffortLinkedIn
 Low Effort employee advocacy tool for startups who have employees with LinkedIn disabilities.
 
-See [docs/PLAN.md](docs/PLAN.md) for the feature spec and implementation plan, [docs/SETUP.md](docs/SETUP.md) for the Phase 0 setup guide (Railway, Slack app, LinkedIn app), and [PRIVACY.md](PRIVACY.md) for the privacy policy.
+See [docs/PLAN.md](docs/PLAN.md) for the feature spec and implementation plan, [docs/SETUP.md](docs/SETUP.md) for the setup + deploy guide (Railway, Slack app, LinkedIn app), and [PRIVACY.md](PRIVACY.md) for the privacy policy.
 
 ## Local development
 
@@ -20,3 +20,7 @@ npm run dev             # start with auto-reload on :3000
 Keep `LINKEDIN_MOCK_MODE=true` locally — shares are simulated and nothing is posted to LinkedIn.
 
 **Receiving Slack traffic locally:** Slack must reach your machine over HTTPS, so run a tunnel — `ngrok http 3000` — then temporarily point the Slack app's three slash-command URLs and the Interactivity request URL at `https://<your-tunnel>/slack/events` (Slack app settings → your app). Point them back at the Railway domain when done. Alternatively, create a second throwaway Slack app from `slack-app-manifest.yaml` with the tunnel URL and a test workspace, and leave the production app untouched.
+
+## Deployment
+
+Railway builds the [`Dockerfile`](Dockerfile) and reads [`railway.json`](railway.json) (healthcheck on `/healthz`, restart on failure). Migrations run at container start, so deploying is just merging to `main` once the service is connected — see [docs/SETUP.md §6](docs/SETUP.md#6-deploy-plan-phase-7-10-min) for the one-time wiring and the go-live smoke test.

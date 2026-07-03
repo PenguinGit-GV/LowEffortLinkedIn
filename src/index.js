@@ -24,6 +24,13 @@ async function main() {
   // the pool instead of dropping them mid-handler.
   const shutdown = async (signal) => {
     console.log(`${signal} received, shutting down`);
+    // db.destroy() waits on pending pool acquires, which can stall for the
+    // full acquire timeout when the database is unreachable — force-exit as a
+    // backstop so the container never hangs past its host's grace period.
+    setTimeout(() => {
+      console.error('Graceful shutdown stalled, forcing exit');
+      process.exit(1);
+    }, 10000).unref();
     try {
       reminderJob.stop();
       await app.stop();
