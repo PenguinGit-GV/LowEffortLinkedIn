@@ -10,6 +10,7 @@
 // blocked request — falls back to the hostname rather than propagating.
 
 const axios = require('axios');
+const { safeLookup, isDisallowedUrl } = require('./ssrfGuard');
 
 const HTTP_TIMEOUT_MS = 5_000;
 // A title always sits in the first few KB of a well-formed <head>; capping
@@ -94,11 +95,41 @@ function readUntilTitleOrLimit(stream, maxBytes) {
 // hostname on any failure.
 async function fetchArticleTitle(url, { logger = console } = {}) {
   const fallback = hostnameTitle(url);
+  // A literal-IP URL (or a redirect to one) never invokes the `lookup`
+  // option at all — Node connects directly, skipping DNS resolution
+  // entirely — so it needs this separate, explicit check.
+  if (isDisallowedUrl(url)) {
+    logger.warn?.(`Refusing to fetch a disallowed URL: ${url}`);
+    return fallback;
+  }
+  // axios's `timeout` is a socket-INACTIVITY timeout (Node's req.setTimeout):
+  // a server that trickles even one byte every few seconds never triggers
+  // it, so it doesn't actually bound total request time. This timer does —
+  // it fires on wall-clock elapsed time regardless of activity, and aborts
+  // the in-flight request/stream so nothing is left running in the
+  // background once we give up.
+  const controller = new AbortController();
+  const hardTimeout = setTimeout(() => controller.abort(), HTTP_TIMEOUT_MS);
   try {
     const res = await axios.get(url, {
       responseType: 'stream',
       timeout: HTTP_TIMEOUT_MS,
       maxRedirects: 5,
+      signal: controller.signal,
+      // Validates every hostname actually resolved — including each
+      // redirect hop, since Node/follow-redirects re-invoke `lookup` per
+      // hop — against private/internal ranges (src/linkedin/ssrfGuard.js).
+      // destination_url is marketer-supplied, not arbitrary public input,
+      // but a marketer account is still a lower trust tier than the server.
+      lookup: safeLookup,
+      // `lookup` alone misses a redirect straight to a literal IP (DNS
+      // resolution never happens for those) — this closes that gap too.
+      beforeRedirect: (redirectOptions) => {
+        const target = redirectOptions.href || `${redirectOptions.protocol}//${redirectOptions.hostname}${redirectOptions.path || ''}`;
+        if (isDisallowedUrl(target)) {
+          throw new Error(`Refusing to follow a redirect to a disallowed URL: ${target}`);
+        }
+      },
       headers: { 'User-Agent': USER_AGENT, Accept: 'text/html' },
     });
 
@@ -118,6 +149,8 @@ async function fetchArticleTitle(url, { logger = console } = {}) {
   } catch (err) {
     logger.warn?.(`Could not fetch page title for ${url}: ${err.message}`);
     return fallback;
+  } finally {
+    clearTimeout(hardTimeout);
   }
 }
 

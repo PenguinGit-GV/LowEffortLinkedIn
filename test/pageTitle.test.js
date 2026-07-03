@@ -99,6 +99,55 @@ describe('fetchArticleTitle', () => {
     expect(title.length).toBe(200);
     expect(title.endsWith('…')).toBe(true);
   });
+
+  test('refuses a disallowed URL up front, without ever calling axios', async () => {
+    const title = await fetchArticleTitle('http://127.0.0.1:9999/', { logger: quiet });
+    expect(title).toBe('127.0.0.1');
+    expect(axios.get).not.toHaveBeenCalled();
+    expect(quiet.warn).toHaveBeenCalledWith(expect.stringContaining('disallowed URL'));
+  });
+
+  test('passes a lookup guard and a beforeRedirect guard to axios', async () => {
+    mockHtmlResponse('<title>Hi</title>');
+    await fetchArticleTitle('https://example.com', { logger: quiet });
+    const [, opts] = axios.get.mock.calls[0];
+    expect(typeof opts.lookup).toBe('function');
+    expect(typeof opts.beforeRedirect).toBe('function');
+    // A redirect to a disallowed target must be rejected by the hook itself.
+    expect(() => opts.beforeRedirect({ href: 'http://169.254.169.254/latest/meta-data/' })).toThrow(
+      /disallowed/
+    );
+    // An ordinary redirect target is left alone.
+    expect(() => opts.beforeRedirect({ href: 'https://example.com/other-page' })).not.toThrow();
+  });
+
+  test('a connection that never goes idle still times out via the wall-clock guard, not just inactivity', async () => {
+    jest.useFakeTimers();
+    try {
+      const stream = new EventEmitter();
+      stream.destroy = jest.fn();
+      axios.get.mockImplementation((url, opts) => {
+        // Mirrors what a real abort does to the underlying stream — proven
+        // against a real hanging connection in manual verification (see PR
+        // description); this tests that fetchArticleTitle reacts correctly.
+        opts.signal.addEventListener('abort', () => {
+          stream.emit('error', Object.assign(new Error('canceled'), { code: 'ERR_CANCELED' }));
+        });
+        return Promise.resolve({ headers: { 'content-type': 'text/html' }, data: stream });
+      });
+
+      const pending = fetchArticleTitle('https://slow-drip.example.com/post', { logger: quiet });
+      // Plain advanceTimersByTime fires the timer synchronously, before the
+      // pending axios promise (and thus the stream's own listener setup)
+      // has had a chance to resolve — the async variant properly interleaves
+      // microtask flushes with timer advancement.
+      await jest.advanceTimersByTimeAsync(5000);
+      const title = await pending;
+      expect(title).toBe('slow-drip.example.com');
+    } finally {
+      jest.useRealTimers();
+    }
+  });
 });
 
 describe('hostnameTitle', () => {
