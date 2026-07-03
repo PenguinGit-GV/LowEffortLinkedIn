@@ -5,6 +5,8 @@ const {
   applyOverride,
   resetOverride,
   listAudit,
+  loadOverrides,
+  mergeEffectiveConfig,
   ConfigOverrideError,
 } = require('../../src/admin/overrides');
 
@@ -75,6 +77,39 @@ function fakeDb({ overrideRows = [] } = {}) {
   db.fn = { now: () => 'NOW' };
   return { db, overridesMap, auditRows };
 }
+
+// index.js's boot sequence is: loadOverrides() then mergeEffectiveConfig()
+// to build the live `config`, BEFORE anything else (createServer, the cron
+// jobs) reads it. Without this exact call in that exact order, a persisted
+// override is silently discarded on every restart — index.js itself isn't
+// unit-tested (it self-executes main() with no exports, and boots a real
+// DB/HTTP listener), so this exercises the precise sequence its boot code
+// runs, using the real functions, as the regression guard for that gap.
+describe('boot-time override loading (mirrors index.js\'s startup sequence)', () => {
+  test('a persisted override is present in the config built at boot, not just at read time', async () => {
+    const { db } = fakeDb({
+      overrideRows: [
+        { key: 'PUBLIC_BASE_URL', value: 'https://admin-set-this.example.com', is_sensitive: false },
+        { key: 'REMINDER_CRON', value: '0 14 * * *', is_sensitive: false },
+      ],
+    });
+
+    const boot = envConfig();
+    const overrides = await loadOverrides(db, KEY);
+    const config = mergeEffectiveConfig(boot, overrides);
+
+    expect(config.publicBaseUrl).toBe('https://admin-set-this.example.com');
+    expect(config.reminderCron).toBe('0 14 * * *');
+  });
+
+  test('an empty overrides table (the common case — feature never used) is a no-op', async () => {
+    const { db } = fakeDb();
+    const boot = envConfig();
+    const overrides = await loadOverrides(db, KEY);
+    const config = mergeEffectiveConfig(boot, overrides);
+    expect(config).toEqual(boot);
+  });
+});
 
 describe('listManagedVars', () => {
   test('shows env defaults with source "env" when nothing is overridden', async () => {
