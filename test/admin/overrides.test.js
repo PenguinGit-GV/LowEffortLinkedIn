@@ -109,6 +109,27 @@ describe('boot-time override loading (mirrors index.js\'s startup sequence)', ()
     const config = mergeEffectiveConfig(boot, overrides);
     expect(config).toEqual(boot);
   });
+
+  test('an undecryptable sensitive row (rotated TOKEN_ENCRYPTION_KEY) is skipped, not thrown on — a throw here would crash-loop boot', async () => {
+    const otherKey = Buffer.alloc(32, 9);
+    const { db } = fakeDb({
+      overrideRows: [
+        // Encrypted under a different key than the one we decrypt with.
+        { key: 'LINKEDIN_CLIENT_SECRET', value: encryptToken('old-secret', otherKey), is_sensitive: true },
+        { key: 'PUBLIC_BASE_URL', value: 'https://admin-set-this.example.com', is_sensitive: false },
+      ],
+    });
+    const logger = { error: jest.fn(), warn: jest.fn(), info: jest.fn() };
+
+    const boot = envConfig();
+    const overrides = await loadOverrides(db, KEY, { logger });
+    const config = mergeEffectiveConfig(boot, overrides);
+
+    // The bad row falls back to the env default; the good row still applies.
+    expect(config.linkedinClientSecret).toBe(boot.linkedinClientSecret);
+    expect(config.publicBaseUrl).toBe('https://admin-set-this.example.com');
+    expect(logger.error).toHaveBeenCalledWith(expect.stringContaining('LINKEDIN_CLIENT_SECRET'));
+  });
 });
 
 describe('listManagedVars', () => {

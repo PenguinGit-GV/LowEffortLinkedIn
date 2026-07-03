@@ -115,8 +115,10 @@ describe('POST /admin/api/restart', () => {
     expect(res.status).toBe(401);
   });
 
-  test('responds with a disclosed-outage message before exiting (F3)', async () => {
-    const exitSpy = jest.spyOn(process, 'exit').mockImplementation(() => {});
+  test('responds with a disclosed-outage message, then hands off to the graceful SIGTERM path (F3)', async () => {
+    // The route signals SIGTERM (so index.js's shutdown handler drains
+    // in-flight work) instead of calling process.exit() cold.
+    const killSpy = jest.spyOn(process, 'kill').mockImplementation(() => {});
     const { db } = fakeAdminDb();
     const logger = { error: jest.fn(), warn: jest.fn(), info: jest.fn() };
     const { receiver } = createServer(testConfig(), db, {
@@ -130,9 +132,10 @@ describe('POST /admin/api/restart', () => {
     expect(res.body.message).toMatch(/briefly unavailable/);
     expect(logger.info).toHaveBeenCalledWith(expect.stringContaining('U111'));
 
-    // process.exit runs on setImmediate — give the event loop a turn.
-    await new Promise((resolve) => setImmediate(resolve));
-    expect(exitSpy).toHaveBeenCalledWith(0);
-    exitSpy.mockRestore();
+    // The signal fires on the response's 'finish' event — by the time
+    // supertest has the response, it must have been sent exactly once.
+    expect(killSpy).toHaveBeenCalledWith(process.pid, 'SIGTERM');
+    expect(killSpy).toHaveBeenCalledTimes(1);
+    killSpy.mockRestore();
   });
 });

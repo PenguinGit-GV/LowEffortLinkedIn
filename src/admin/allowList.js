@@ -56,9 +56,11 @@ function isValidCron(v) {
   return isNonEmptyString(v) && cron.validate(v);
 }
 
+// Same 1–MAX rule config.js enforces at boot and /create-post enforces
+// per-submission.
 function isValidPostExpiryHours(v) {
   const n = Number.parseFloat(v);
-  return Number.isFinite(n) && n > 0 && n <= MAX_POST_EXPIRY_HOURS;
+  return Number.isFinite(n) && n >= 1 && n <= MAX_POST_EXPIRY_HOURS;
 }
 
 function isValidApiVersion(v) {

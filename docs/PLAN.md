@@ -288,10 +288,11 @@ cron job (Railway cron or `node-cron` in-process) runs the token-expiry reminder
   is one of the most widely allowlisted bots on the web, so letting it do the
   unfurl (by simply putting the URL in `commentary` and omitting `content`)
   sidesteps the problem instead of trying to disguise our own fetch.
-  `fetchArticleTitle`/`posts.article_title` are still populated at
-  `/create-post` time but are no longer read when building the LinkedIn
-  payload; removing them outright is a candidate follow-up once this approach
-  is confirmed working in production.
+  `fetchArticleTitle`/`posts.article_title` (and `src/linkedin/ssrfGuard.js`,
+  which existed to protect that fetch) have since been removed outright — the
+  follow-up this paragraph originally flagged: the value was fetched (up to
+  ~5s of outbound HTTP per `/create-post`) and stored but never read by
+  anything once the payload stopped building `content.article`.
 
   Post with image: `content` is a oneOf in the Posts API — a post can carry
   media or nothing, never an article attachment. When an image is attached,
@@ -345,8 +346,6 @@ CREATE TABLE posts (
                                              -- all cards live in post_cards
   slack_message_ts     TEXT,                -- primary card message ts, for chat.update
   created_by_slack_id  TEXT NOT NULL,
-  article_title        TEXT NOT NULL DEFAULT '', -- LinkedIn content.article.title;
-                                             -- resolved once at creation (§4)
   expires_at           TIMESTAMPTZ,         -- computed at creation (§2.6); marketer's
                                              -- override or DEFAULT_POST_EXPIRY_HOURS
   expired_at           TIMESTAMPTZ,         -- stamped once the expiry job has removed
@@ -484,19 +483,15 @@ Friendly-casual with emoji (Decision #10). These are the shipping strings;
 - Raw tokens and full LinkedIn payloads are never logged.
 - Server fails fast at startup if `MARKETER_SLACK_IDS` is empty/unset, rather than
   silently locking everyone out or (worse) leaving the command unrestricted.
-- The article-title fetch (§4, Decision #18) makes an outbound request to a
-  URL supplied by an already-authorized marketer (the same `destination_url`
-  gate as the rest of `/create-post`) — not arbitrary user input, but still a
-  lower trust tier than the server, so it's treated as the standard SSRF
-  shape: `src/linkedin/ssrfGuard.js` blocks private/loopback/link-local
-  (including cloud metadata) IPs and internal hostnames, checked both up
-  front and on every redirect hop, plus DNS-resolution-time validation of
-  the address actually connected to (closing the DNS-rebinding gap a
-  one-time check would miss). Also bounded regardless of target: a genuine
-  wall-clock timeout (not just axios's inactivity-based one, which a slow
-  drip never trips), response capped at the first 64KB, non-HTML responses
-  rejected without reading the body, and any failure degrades to the
-  hostname rather than erroring.
+- The article-title fetch (§4, Decision #18) and its SSRF guard
+  (`src/linkedin/ssrfGuard.js`) have been removed along with the rest of
+  that subsystem (see §4): the server no longer makes any outbound request
+  to a marketer-supplied URL, which retires the SSRF surface entirely
+  rather than mitigating it. If a server-side fetch of `destination_url`
+  is ever reintroduced, restore the guard's approach with it: block
+  private/loopback/link-local (including cloud metadata) IPs and internal
+  hostnames, validate at DNS-resolution time and on every redirect hop
+  (DNS rebinding), enforce a wall-clock timeout, and cap the bytes read.
 
 ## 10. Risks & Mitigations
 

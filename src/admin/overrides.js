@@ -20,14 +20,32 @@ class ConfigOverrideError extends Error {
 
 // Decrypts every stored row's raw string value. Rows for keys no longer in
 // the allow-list (e.g. removed in a later deploy) are skipped rather than
-// thrown on — a stale row shouldn't 500 an unrelated admin action.
-async function loadOverrides(db, encryptionKey) {
+// thrown on — a stale row shouldn't 500 an unrelated admin action. The same
+// goes for a row that no longer decrypts (a rotated TOKEN_ENCRYPTION_KEY or
+// a corrupted value): this runs unconditionally at boot (index.js), so
+// throwing here wouldn't 500 one request — it would crash-loop the whole
+// process, taking down the very admin UI that could fix the bad row.
+async function loadOverrides(db, encryptionKey, { logger = console } = {}) {
   const rows = await db('config_overrides').select();
   const out = {};
   for (const row of rows) {
     const entry = getEntry(row.key);
     if (!entry) continue;
-    const raw = row.is_sensitive ? decryptToken(row.value, encryptionKey) : row.value;
+    let raw;
+    if (row.is_sensitive) {
+      try {
+        raw = decryptToken(row.value, encryptionKey);
+      } catch {
+        logger.error(
+          `Config override for ${row.key} could not be decrypted (rotated ` +
+            'TOKEN_ENCRYPTION_KEY or corrupted row?) — ignoring it; the env ' +
+            'default applies until the value is re-entered in the admin UI'
+        );
+        continue;
+      }
+    } else {
+      raw = row.value;
+    }
     out[row.key] = { raw, updatedAt: row.updated_at, updatedBy: row.updated_by };
   }
   return out;

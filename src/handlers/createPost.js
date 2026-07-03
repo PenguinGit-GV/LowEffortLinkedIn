@@ -7,13 +7,13 @@ const { buildPostCard } = require('../blocks/postCard');
 const { escapeMrkdwn } = require('../mrkdwn');
 const { postEphemeralSafely } = require('../slack/ephemeral');
 const { recordPostCards } = require('../db/postCards');
-const { fetchArticleTitle: defaultFetchArticleTitle } = require('../linkedin/pageTitle');
 const { MAX_POST_EXPIRY_HOURS } = require('../config');
+// LinkedIn's commentary field limit (PLAN.md §2.1); enforced client-side via
+// max_length and re-checked server-side on submit, with the same
+// caption+URL budget rule the custom-share modal applies.
+const { CAPTION_MAX, captionWithUrlError } = require('../linkedin/limits');
 
 const MODAL_CALLBACK_ID = 'create_post_modal';
-// LinkedIn's commentary field limit (PLAN.md §2.1); enforced client-side via
-// max_length and re-checked server-side on submit.
-const CAPTION_MAX = 3000;
 // The card renders the URL inside a section block (3000-char mrkdwn limit)
 // behind a ~32-char prefix, and escaping can grow the text further — bound the
 // input well below that.
@@ -138,11 +138,13 @@ function parseSubmission(values, { defaultExpiryHours } = {}) {
 
   // number_input's client-side min/max already guard the common case; this
   // is the server-side re-check the rest of the modal's fields also get.
+  // Same 1–MAX rule the modal advertises and config.js enforces on the
+  // DEFAULT_POST_EXPIRY_HOURS env default.
   const expiryHoursRaw = values.expiry_hours?.value?.value;
   let expiryHours = defaultExpiryHours;
   if (expiryHoursRaw !== undefined && expiryHoursRaw !== null && expiryHoursRaw !== '') {
     const parsedHours = Number.parseFloat(expiryHoursRaw);
-    if (!Number.isFinite(parsedHours) || parsedHours <= 0 || parsedHours > MAX_POST_EXPIRY_HOURS) {
+    if (!Number.isFinite(parsedHours) || parsedHours < 1 || parsedHours > MAX_POST_EXPIRY_HOURS) {
       errors.expiry_hours = `Enter a number between 1 and ${MAX_POST_EXPIRY_HOURS}, or leave it blank for the default.`;
     } else {
       expiryHours = parsedHours;
@@ -151,18 +153,14 @@ function parseSubmission(values, { defaultExpiryHours } = {}) {
 
   // The LinkedIn payload always appends the URL to the caption as a
   // trailing line (§4 — lets LinkedIn's own crawler unfurl it), so caption +
-  // "\n\n" + URL must fit the 3000-char limit regardless of whether an
-  // image is attached.
+  // separator + URL must fit the commentary limit regardless of whether an
+  // image is attached (shared rule: src/linkedin/limits.js).
   if (destinationUrl && !errors.destination_url) {
     for (const blockId of ['caption_a', 'caption_b', 'caption_c']) {
       const value = text(blockId);
       if (!value || errors[blockId]) continue;
-      const total = value.length + 2 + destinationUrl.length;
-      if (total > CAPTION_MAX) {
-        errors[blockId] =
-          `The destination link gets appended to the caption on LinkedIn — ` +
-          `together they're ${total} characters; the limit is ${CAPTION_MAX}. Please shorten this caption.`;
-      }
+      const budgetError = captionWithUrlError(value, destinationUrl);
+      if (budgetError) errors[blockId] = budgetError;
     }
   }
 
@@ -180,30 +178,23 @@ function parseSubmission(values, { defaultExpiryHours } = {}) {
   };
 }
 
-// Runs after ack(): resolve the LinkedIn article title → insert → broadcast →
-// record card locations → confirm. Broadcasts to every channel in
+// Runs after ack(): insert → broadcast → record card locations → confirm.
+// Broadcasts to every channel in
 // config.advocacyChannelIds; each successful card's (channel, ts) is recorded
 // in post_cards so the share counter and the expiry job can update all of
 // them. If every channel fails, the orphaned row is removed so the posts table
 // only holds posts that actually have a card. A partial failure still
 // succeeds — the confirmation lists only the channels that received the card,
 // and the failures are logged.
-async function publishPost(
-  { db, client, config, logger, fetchArticleTitle = defaultFetchArticleTitle },
-  { parsed, userId, originChannelId }
-) {
+async function publishPost({ db, client, config, logger }, { parsed, userId, originChannelId }) {
   const { expiry_hours: expiryHours, ...postFields } = parsed;
   const expiresAt = new Date(Date.now() + expiryHours * 60 * 60 * 1000);
-  // Once per post, not once per share (§4) — the fetch's latency/failure
-  // mode never touches the actual Share button click.
-  const articleTitle = await fetchArticleTitle(postFields.destination_url, { logger });
 
   const [{ id: postId }] = await db('posts')
     .insert({
       ...postFields,
       created_by_slack_id: userId,
       expires_at: expiresAt,
-      article_title: articleTitle,
     })
     .returning('id');
 
@@ -212,7 +203,6 @@ async function publishPost(
     id: postId,
     created_by_slack_id: userId,
     expires_at: expiresAt,
-    article_title: articleTitle,
   };
   const broadcasts = [];
   const errors = [];
@@ -263,7 +253,7 @@ async function publishPost(
   await postEphemeralSafely({ client, logger }, originChannelId, userId, copy.C9(channelList));
 }
 
-function registerCreatePost(app, { config, db, fetchArticleTitle }) {
+function registerCreatePost(app, { config, db }) {
   app.command('/create-post', async ({ command, ack, respond, client, logger }) => {
     await ack();
     if (!config.marketerSlackIds.includes(command.user_id)) {
@@ -305,10 +295,7 @@ function registerCreatePost(app, { config, db, fetchArticleTitle }) {
     }
 
     try {
-      await publishPost(
-        { db, client, config, logger, fetchArticleTitle },
-        { parsed, userId: body.user.id, originChannelId }
-      );
+      await publishPost({ db, client, config, logger }, { parsed, userId: body.user.id, originChannelId });
     } catch (err) {
       logger.error('publishPost failed', err);
       await postEphemeralSafely(

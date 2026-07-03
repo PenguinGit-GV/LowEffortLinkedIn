@@ -102,6 +102,20 @@ describe('GET /admin/login/callback', () => {
     expect(cookie).toContain('HttpOnly');
     expect(cookie).toContain('SameSite=Strict');
   });
+
+  test('a state token is single-use — replaying it within its TTL is rejected', async () => {
+    const adminOpenId = {
+      exchangeCodeForToken: jest.fn().mockResolvedValue('slack-access-token'),
+      fetchSlackUserId: jest.fn().mockResolvedValue('U111'),
+    };
+    const agent = buildApp({ config: testConfig(), adminOpenId });
+    const state = signToken({ purpose: 'admin_login_state' }, ADMIN_SESSION_SECRET, 600);
+    const first = await agent.get(`/admin/login/callback?code=abc&state=${state}`);
+    expect(first.status).toBe(302);
+    const replay = await agent.get(`/admin/login/callback?code=abc&state=${state}`);
+    expect(replay.status).toBe(400);
+    expect(replay.headers['set-cookie']).toBeUndefined();
+  });
 });
 
 describe('requireAdminSession (via /admin/api/config)', () => {
@@ -123,6 +137,17 @@ describe('requireAdminSession (via /admin/api/config)', () => {
     const agent = buildApp({ config: testConfig() });
     const res = await agent.get('/admin/api/config').set('Cookie', sessionCookieFor('U111'));
     expect(res.status).toBe(200);
+  });
+
+  test('a malformed %-escape in a cookie reads as "not authenticated", not a 500', async () => {
+    // decodeURIComponent throws a URIError on values like "%zz"; any other
+    // app on the same domain can plant such a cookie. It must not turn
+    // every /admin request into a 500 until the user clears cookies.
+    const agent = buildApp({ config: testConfig() });
+    const res = await agent
+      .get('/admin/api/config')
+      .set('Cookie', 'some_other_app=%zz; admin_session=%zz');
+    expect(res.status).toBe(401);
   });
 });
 

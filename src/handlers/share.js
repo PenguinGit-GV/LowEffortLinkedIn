@@ -13,10 +13,12 @@ const { postEphemeralSafely } = require('../slack/ephemeral');
 const { fetchSlackFile } = require('../slack/files');
 const { loadPostCards } = require('../db/postCards');
 
+// LinkedIn's commentary limit and the caption+URL budget rule — the same
+// shared module the /create-post modal enforces, so the two can't drift.
+const { CAPTION_MAX, captionWithUrlError } = require('../linkedin/limits');
+
 const CUSTOM_MODAL_CALLBACK_ID = 'share_custom_modal';
 const SHARE_ACTION_PATTERN = /^share_variation_[abc]$/;
-// LinkedIn's commentary limit — same cap the /create-post modal enforces.
-const CAPTION_MAX = 3000;
 const PG_UNIQUE_VIOLATION = '23505';
 
 // Layer 1 of the idempotency guard (§2.3 step 2): absorbs double-clicks
@@ -247,7 +249,15 @@ async function runSharePipeline(
     }
 
     await postEphemeralSafely({ client, logger }, channelId, userId, copy.C3);
-    await updateCardCounter({ db, client, logger }, post);
+    try {
+      await updateCardCounter({ db, client, logger }, post);
+    } catch (err) {
+      // The share itself succeeded and the user has been told so (C3) — a
+      // failed counter refresh is cosmetic and must not fall into the
+      // catch-all below, which would tell them to retry (retrying only
+      // yields C4 "already shared").
+      logger.warn(`Card counter update failed after a successful share: ${err.message}`);
+    }
   } catch (err) {
     logger.error('Share pipeline failed', err);
     await postEphemeralSafely(
@@ -263,12 +273,19 @@ async function runSharePipeline(
 
 // Pre-filled with Caption A (§2.3); {post_id, channel_id} rides in
 // private_metadata so the submission can run the pipeline and respond in the
-// right channel.
+// right channel. destination_url rides along too so the submission's
+// caption+URL budget check needs no DB read inside Slack's 3-second ack
+// window — a slow-but-alive DB there would blow the deadline and show the
+// marketer Slack's opaque timeout banner.
 function buildCustomShareModal({ post, channelId }) {
   return {
     type: 'modal',
     callback_id: CUSTOM_MODAL_CALLBACK_ID,
-    private_metadata: JSON.stringify({ post_id: post.id, channel_id: channelId }),
+    private_metadata: JSON.stringify({
+      post_id: post.id,
+      channel_id: channelId,
+      destination_url: post.destination_url,
+    }),
     title: { type: 'plain_text', text: 'Edit & share' },
     submit: { type: 'plain_text', text: 'Share to LinkedIn' },
     close: { type: 'plain_text', text: 'Cancel' },
@@ -332,6 +349,13 @@ function registerShareHandlers(app, { config, db, shareClient, fetchFile }) {
         );
         return;
       }
+      // Same authoritative check the pipeline runs (§2.3): don't let the
+      // user compose a whole custom caption only to lose it to C12 at
+      // submit time because the card's buttons outlived the window.
+      if (post.expires_at && new Date(post.expires_at) <= new Date()) {
+        await postEphemeralSafely({ client, logger }, body.channel?.id, body.user.id, copy.C12);
+        return;
+      }
       await client.views.open({
         trigger_id: body.trigger_id,
         view: buildCustomShareModal({ post, channelId: body.channel?.id || null }),
@@ -372,51 +396,28 @@ function registerShareHandlers(app, { config, db, shareClient, fetchFile }) {
       return;
     }
 
-    let post;
-    try {
-      post = meta.post_id ? await db('posts').where({ id: meta.post_id }).first() : null;
-    } catch (err) {
-      // Pre-ack DB failure: keep the modal open with a field error instead of
-      // letting the ack window lapse into Slack's opaque timeout banner.
-      logger.error('Custom share modal post lookup failed', err);
-      await ack({
-        response_action: 'errors',
-        errors: { custom_caption: 'Something went wrong — please try submitting again.' },
-      });
-      return;
-    }
     // The destination URL is always appended to the commentary (§4 — lets
     // LinkedIn's own crawler unfurl it), so caption + separator + URL must
-    // fit the same limit, regardless of whether an image is attached.
-    if (post?.destination_url) {
-      const total = text.length + 2 + post.destination_url.length;
-      if (total > CAPTION_MAX) {
-        await ack({
-          response_action: 'errors',
-          errors: {
-            custom_caption:
-              `The destination link gets appended to your caption on LinkedIn — ` +
-              `together they're ${total} characters; the limit is ${CAPTION_MAX}. Please trim it.`,
-          },
-        });
-        return;
-      }
+    // fit the same limit, regardless of whether an image is attached
+    // (shared rule: src/linkedin/limits.js). The URL comes from
+    // private_metadata (stashed at modal-open time) so this pre-ack path
+    // stays free of DB reads — everything that needs the DB runs after
+    // ack(), outside Slack's 3-second window.
+    const budgetError = captionWithUrlError(text, meta.destination_url);
+    if (budgetError) {
+      await ack({ response_action: 'errors', errors: { custom_caption: budgetError } });
+      return;
     }
     await ack();
 
-    if (!post) {
-      await postEphemeralSafely(
-        { client, logger },
-        meta.channel_id,
-        body.user.id,
-        '😕 This post no longer exists.'
-      );
-      return;
-    }
+    if (!meta.post_id) return; // metadata is ours; malformed means nothing actionable
+    // The pipeline re-reads the post itself and already handles every
+    // outcome a lookup here would: a deleted post ("no longer exists"), an
+    // expired one (C12), and a DB failure (generic ephemeral).
     await runSharePipeline(
       { config, db, shareClient, client, logger, ...(fetchFile ? { fetchFile } : {}) },
       {
-        postId: post.id,
+        postId: meta.post_id,
         variation: 'CUSTOM',
         customText: text,
         userId: body.user.id,

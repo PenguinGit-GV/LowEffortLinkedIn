@@ -16,7 +16,9 @@ const STYLE = `
     --sky-link: #2997ff;
     --ink: #1d1d1f;
     --ink-muted-80: #333333;
-    --ink-muted-48: #7a7a7a;
+    /* Used for 12px meta text on white — must stay ≥ 4.5:1 (WCAG AA for
+       normal-size text); #7a7a7a was ~4.48:1, just under. */
+    --ink-muted-48: #707070;
     --canvas: #ffffff;
     --parchment: #f5f5f7;
     --hairline: #e0e0e0;
@@ -86,11 +88,26 @@ const STYLE = `
     font-family: inherit; font-size: 17px; padding: 12px 20px;
     border-radius: 9999px; border: 1px solid var(--hairline); width: 100%; max-width: 360px;
   }
-  .edit-row { display: none; margin-top: 16px; gap: 8px; }
+  .edit-row { display: none; margin-top: 16px; gap: 8px; flex-wrap: wrap; }
   .actions { display: flex; gap: 8px; align-items: center; }
   table { width: 100%; border-collapse: collapse; font-size: 14px; }
   th, td { text-align: left; padding: 12px 8px; border-bottom: 1px solid var(--hairline); }
   tr:nth-child(even) { background: var(--parchment); }
+  /* Wide tables (audit log, restore plan) scroll inside their own container
+     on narrow screens instead of forcing whole-page horizontal scroll. */
+  #audit-log, #restore-plan { overflow-x: auto; }
+  @media (max-width: 480px) {
+    input[type=text] { max-width: 100%; }
+  }
+  /* Keeps the restore file input keyboard-reachable (display:none would take
+     it out of the tab order entirely) while hiding it visually; its label is
+     styled as the visible button. */
+  .visually-hidden-input {
+    position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+    overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+  }
+  label.btn-secondary:focus-within { outline: 2px solid var(--primary-focus); outline-offset: 2px; }
+  .pager { display: flex; gap: 8px; align-items: center; margin-top: 12px; }
   dialog { border: none; border-radius: 18px; padding: 24px; max-width: 420px; }
   dialog::backdrop { background: rgba(0,0,0,0.4); }
   .empty { color: var(--ink-muted-48); font-size: 14px; padding: 16px 0; }
@@ -217,7 +234,12 @@ const CLIENT_SCRIPT = `
           if (!ok) return;
           clearError();
           api('/admin/api/config/' + encodeURIComponent(item.key), { method: 'DELETE' })
-            .then(refresh)
+            .then(function (body) {
+              if (body.reload === 'restart') {
+                showInfo(item.key + ' reset — it takes effect after the next restart (System Health → Restart service).');
+              }
+              return refresh();
+            })
             .catch(function (err) { showError(err.message); });
         });
       });
@@ -231,9 +253,22 @@ const CLIENT_SCRIPT = `
     input.type = 'text';
     input.placeholder = item.sensitive ? 'Enter new value' : item.value;
     if (!item.sensitive) input.value = item.value;
+    // Re-acquiring your own lock refreshes its TTL (locks.js) — without
+    // this, a slow typist's 2-minute lock lapses mid-edit and another
+    // admin can grab the key while they're still typing.
+    var lockRefreshedAt = 0;
+    input.addEventListener('input', function () {
+      var now = Date.now();
+      if (now - lockRefreshedAt < 30000) return;
+      lockRefreshedAt = now;
+      api('/admin/api/config/' + encodeURIComponent(item.key) + '/lock', { method: 'POST' }).catch(function () {});
+    });
     var saveBtn = el('button', { className: 'btn-primary', text: 'Save' });
     saveBtn.addEventListener('click', function () {
-      if (!input.value) return;
+      if (!input.value) {
+        showError('Enter a value for ' + item.key + ' before saving.');
+        return;
+      }
       confirmDialog('Apply this value to ' + item.key + '?').then(function (ok) {
         if (!ok) return;
         clearError();
@@ -242,7 +277,12 @@ const CLIENT_SCRIPT = `
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ value: input.value }),
         })
-          .then(refresh)
+          .then(function (body) {
+            if (body.reload === 'restart') {
+              showInfo(item.key + ' saved — it takes effect after the next restart (System Health → Restart service).');
+            }
+            return refresh();
+          })
           .catch(function (err) { showError(err.message); });
       });
     });
@@ -291,11 +331,34 @@ const CLIENT_SCRIPT = `
     return tr;
   }
 
+  var AUDIT_PER_PAGE = 20; // mirrors the server's perPage (admin/api.js)
+  var auditPage = 1;
+
+  function renderAuditPager(container, entryCount) {
+    var pager = el('div', { className: 'pager' });
+    var newer = el('button', { className: 'btn-secondary', text: 'Newer' });
+    var label = el('span', { className: 'meta', text: 'Page ' + auditPage });
+    var older = el('button', { className: 'btn-secondary', text: 'Older' });
+    newer.disabled = auditPage <= 1;
+    // A short page means there is nothing older; a full page might have more.
+    older.disabled = entryCount < AUDIT_PER_PAGE;
+    function go(delta) {
+      auditPage += delta;
+      loadAudit().catch(function (err) { showError(err.message); });
+    }
+    newer.addEventListener('click', function () { go(-1); });
+    older.addEventListener('click', function () { go(1); });
+    pager.appendChild(newer);
+    pager.appendChild(label);
+    pager.appendChild(older);
+    container.appendChild(pager);
+  }
+
   function loadAudit() {
-    return api('/admin/api/audit').then(function (body) {
+    return api('/admin/api/audit?page=' + auditPage).then(function (body) {
       var container = document.getElementById('audit-log');
       container.innerHTML = '';
-      if (!body.entries.length) {
+      if (!body.entries.length && auditPage === 1) {
         container.appendChild(el('div', { className: 'empty', text: 'No changes yet.' }));
         return;
       }
@@ -313,6 +376,12 @@ const CLIENT_SCRIPT = `
       body.entries.forEach(function (entry) { tbody.appendChild(renderAuditRow(entry)); });
       table.appendChild(tbody);
       container.appendChild(table);
+      // Rendered whenever there can be another page in either direction:
+      // any page past the first (so there is always a way back), or a full
+      // first page (there may be older entries).
+      if (auditPage > 1 || body.entries.length >= AUDIT_PER_PAGE) {
+        renderAuditPager(container, body.entries.length);
+      }
     });
   }
 
@@ -506,8 +575,8 @@ function renderDashboard() {
   <main>
     <h1>Environment Variables</h1>
     <p class="lead">Manage a subset of configuration without touching Railway. Bootstrap secrets, and who can access this page, stay Railway-only by design.</p>
-    <div id="error-banner" class="error-banner"></div>
-    <div id="info-banner" class="info-banner"></div>
+    <div id="error-banner" class="error-banner" role="alert"></div>
+    <div id="info-banner" class="info-banner" role="status"></div>
 
     <h2>Configuration</h2>
     <div id="config-list"></div>
@@ -528,7 +597,7 @@ function renderDashboard() {
         <button class="btn-secondary" id="backup-btn">Download backup</button>
         <label class="btn-secondary" style="cursor:pointer">
           Restore from file
-          <input type="file" id="restore-file" accept="application/json" style="display:none">
+          <input type="file" id="restore-file" accept="application/json" class="visually-hidden-input">
         </label>
         <button class="btn-primary" id="confirm-restore-btn">Apply restore</button>
       </div>

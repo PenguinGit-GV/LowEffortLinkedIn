@@ -175,10 +175,8 @@ describe('view handler glue', () => {
       marketerSlackIds: ['U_MARKETER'],
       defaultPostExpiryHours: 8,
     };
-    // Stubbed so tests never make a real HTTP request for the page title.
-    const fetchArticleTitle = jest.fn().mockResolvedValue('Stubbed Page Title');
-    registerCreatePost(app, { config, db, fetchArticleTitle });
-    return { handlers, config, fetchArticleTitle };
+    registerCreatePost(app, { config, db });
+    return { handlers, config };
   }
 
   test('acks with field errors for an invalid submission', async () => {
@@ -201,7 +199,7 @@ describe('view handler glue', () => {
   });
 
   test('acks cleanly and publishes for a valid submission', async () => {
-    const { handlers, fetchArticleTitle } = register();
+    const { handlers } = register();
     const ack = jest.fn();
     const client = {
       chat: {
@@ -221,7 +219,6 @@ describe('view handler glue', () => {
     });
     expect(ack).toHaveBeenCalledWith();
     expect(client.chat.postMessage).toHaveBeenCalled();
-    expect(fetchArticleTitle).toHaveBeenCalledWith('https://example.com/launch', expect.anything());
   });
 
   test('rejects non-marketers at the command with C10', async () => {
@@ -310,9 +307,6 @@ describe('publishPost', () => {
     image_slack_file_id: null,
     expiry_hours: 8,
   };
-  // Stubbed in every test below so nothing here makes a real HTTP request.
-  const fetchArticleTitle = () => Promise.resolve('Stubbed Page Title');
-
   test('inserts, broadcasts, stores the card location, and confirms', async () => {
     const db = makeDbStub();
     const client = {
@@ -324,13 +318,12 @@ describe('publishPost', () => {
 
     const before = Date.now();
     await publishPost(
-      { db, client, config, logger: console, fetchArticleTitle },
+      { db, client, config, logger: console },
       { parsed, userId: 'U_MARKETER', originChannelId: 'C_ORIGIN' }
     );
 
     const insertedRow = db.calls.inserts[0].row;
     expect(insertedRow.created_by_slack_id).toBe('U_MARKETER');
-    expect(insertedRow.article_title).toBe('Stubbed Page Title');
     // expiry_hours is consumed to compute expires_at, not stored as its own column.
     expect(insertedRow.expiry_hours).toBeUndefined();
     const expiresAt = insertedRow.expires_at.getTime();
@@ -362,7 +355,7 @@ describe('publishPost', () => {
     };
 
     await publishPost(
-      { db, client, config, logger: { warn: jest.fn() }, fetchArticleTitle },
+      { db, client, config, logger: { warn: jest.fn() } },
       { parsed, userId: 'U_MARKETER', originChannelId: 'C_ORIGIN' }
     );
 
@@ -385,7 +378,7 @@ describe('publishPost', () => {
 
     await expect(
       publishPost(
-        { db, client, config, logger: { warn: jest.fn() }, fetchArticleTitle },
+        { db, client, config, logger: { warn: jest.fn() } },
         { parsed, userId: 'U_MARKETER', originChannelId: 'C_ORIGIN' }
       )
     ).resolves.toBeUndefined();
@@ -406,7 +399,7 @@ describe('publishPost', () => {
     };
 
     await publishPost(
-      { db, client, config: multiConfig, logger: console, fetchArticleTitle },
+      { db, client, config: multiConfig, logger: console },
       { parsed, userId: 'U_MARKETER', originChannelId: 'C_ORIGIN' }
     );
 
@@ -451,7 +444,7 @@ describe('publishPost', () => {
     };
 
     await publishPost(
-      { db, client, config: multiConfig, logger: { warn }, fetchArticleTitle },
+      { db, client, config: multiConfig, logger: { warn } },
       { parsed, userId: 'U_MARKETER', originChannelId: 'C_ORIGIN' }
     );
 
@@ -468,22 +461,5 @@ describe('publishPost', () => {
     const confirmation = client.chat.postEphemeral.mock.calls[0][0].text;
     expect(confirmation).toContain('<#C_ADVOCACY1>');
     expect(confirmation).not.toContain('<#C_ADVOCACY2>');
-  });
-
-  test('propagates a title-fetch failure rather than silently posting without one', async () => {
-    // fetchArticleTitle's real implementation never rejects (it falls back
-    // to the hostname internally) — this guards against a future regression
-    // where an override or refactor reintroduces an unhandled rejection here.
-    const db = makeDbStub();
-    const client = { chat: { postMessage: jest.fn(), postEphemeral: jest.fn() } };
-    const failingFetch = () => Promise.reject(new Error('boom'));
-
-    await expect(
-      publishPost(
-        { db, client, config, logger: { warn: jest.fn() }, fetchArticleTitle: failingFetch },
-        { parsed, userId: 'U_MARKETER', originChannelId: 'C_ORIGIN' }
-      )
-    ).rejects.toThrow('boom');
-    expect(db.calls.inserts).toHaveLength(0);
   });
 });
