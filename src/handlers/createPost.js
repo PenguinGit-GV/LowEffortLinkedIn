@@ -177,8 +177,9 @@ function parseSubmission(values, { defaultExpiryHours } = {}) {
 }
 
 // Runs after ack(): insert → broadcast → store card location → confirm.
-// If the broadcast fails, the orphaned row is removed so the posts table only
-// ever holds posts that actually have a card.
+// If the broadcast fails on all channels, the orphaned row is removed so the
+// posts table only ever holds posts that actually have a card. Broadcasts to
+// all channels and stores the first successful post's location for tracking.
 async function publishPost({ db, client, config, logger }, { parsed, userId, originChannelId }) {
   const { expiry_hours: expiryHours, ...postFields } = parsed;
   const expiresAt = new Date(Date.now() + expiryHours * 60 * 60 * 1000);
@@ -187,33 +188,49 @@ async function publishPost({ db, client, config, logger }, { parsed, userId, ori
     .returning('id');
 
   const post = { ...postFields, id: postId, created_by_slack_id: userId, expires_at: expiresAt };
-  let broadcast;
-  try {
-    broadcast = await client.chat.postMessage({
-      channel: config.advocacyChannelId,
-      text: `New post ready to share: ${parsed.destination_url}`,
-      blocks: buildPostCard({ post, shareCount: 0 }),
-      unfurl_links: true,
-    });
-  } catch (err) {
+  const broadcasts = [];
+  const errors = [];
+
+  for (const channelId of config.advocacyChannelIds) {
+    try {
+      const broadcast = await client.chat.postMessage({
+        channel: channelId,
+        text: `New post ready to share: ${parsed.destination_url}`,
+        blocks: buildPostCard({ post, shareCount: 0 }),
+        unfurl_links: true,
+      });
+      broadcasts.push({ channel: channelId, ...broadcast });
+    } catch (err) {
+      errors.push({
+        channel: channelId,
+        error: err.data?.error || err.message,
+      });
+    }
+  }
+
+  if (broadcasts.length === 0) {
     await db('posts').where({ id: postId }).del();
+    const channelList = config.advocacyChannelIds.map((c) => `<#${c}>`).join(', ');
     const reason =
-      err.data?.error === 'channel_not_found' || err.data?.error === 'not_in_channel'
-        ? `I can't post to <#${config.advocacyChannelId}> — is the channel ID right and the app allowed there?`
-        : `Broadcasting failed: \`${err.data?.error || err.message}\`.`;
+      errors.some((e) => ['channel_not_found', 'not_in_channel'].includes(e.error)) &&
+      errors.length === config.advocacyChannelIds.length
+        ? `I can't post to ${channelList} — are the channel IDs right and is the app allowed there?`
+        : `Broadcasting failed: ${errors.map((e) => `\`${e.error}\``).join(', ')}.`;
     await postEphemeralSafely({ client, logger }, originChannelId, userId, `😕 ${reason}`);
     return;
   }
 
+  const firstBroadcast = broadcasts[0];
   await db('posts')
     .where({ id: postId })
-    .update({ slack_channel_id: broadcast.channel, slack_message_ts: broadcast.ts });
+    .update({ slack_channel_id: firstBroadcast.channel, slack_message_ts: firstBroadcast.ts });
 
+  const channelList = config.advocacyChannelIds.map((c) => `<#${c}>`).join(', ');
   await postEphemeralSafely(
     { client, logger },
     originChannelId,
     userId,
-    copy.C9(`<#${config.advocacyChannelId}>`)
+    copy.C9(channelList)
   );
 }
 

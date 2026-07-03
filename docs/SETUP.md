@@ -51,8 +51,10 @@ collecting.
 5. Get the two Slack IDs the app needs:
    - **Marketer user ID** (`MARKETER_SLACK_IDS`): in Slack, open the marketer's
      profile → ⋮ → **Copy member ID** (looks like `U0123ABCDEF`).
-   - **Advocacy channel ID** (`ADVOCACY_CHANNEL_ID`): open the target channel →
-     click its name → scroll the About tab to the bottom — the `C…` ID is there.
+   - **Advocacy channel IDs** (`ADVOCACY_CHANNEL_ID`): comma-separated channel IDs
+     where post cards are broadcast. For each channel, open it → click its name →
+     scroll the About tab to the bottom — the `C…` ID is there. Separate multiple
+     with commas (e.g., `C0123ABCDEF,C0456DEFGHI`).
 6. Slack will warn that the request URLs aren't verified yet — that's expected;
    nothing is deployed. Verification happens in Phase 6 when the server is live.
 

@@ -169,7 +169,7 @@ describe('view handler glue', () => {
       where: () => ({ update: async () => 1, del: async () => 1 }),
     });
     const config = {
-      advocacyChannelId: 'C_ADVOCACY',
+      advocacyChannelIds: ['C_ADVOCACY'],
       marketerSlackIds: ['U_MARKETER'],
       defaultPostExpiryHours: 8,
     };
@@ -286,7 +286,7 @@ describe('publishPost', () => {
     return db;
   }
 
-  const config = { advocacyChannelId: 'C_ADVOCACY' };
+  const config = { advocacyChannelIds: ['C_ADVOCACY'] };
   const parsed = {
     destination_url: 'https://example.com',
     caption_a: 'A',
@@ -372,5 +372,66 @@ describe('publishPost', () => {
       )
     ).resolves.toBeUndefined();
     expect(db.calls.updates).toHaveLength(1);
+  });
+
+  test('broadcasts to multiple channels and stores the first post location', async () => {
+    const db = makeDbStub();
+    const multiConfig = { advocacyChannelIds: ['C_ADVOCACY1', 'C_ADVOCACY2'] };
+    const client = {
+      chat: {
+        postMessage: jest
+          .fn()
+          .mockResolvedValueOnce({ channel: 'C_ADVOCACY1', ts: '111.222' })
+          .mockResolvedValueOnce({ channel: 'C_ADVOCACY2', ts: '333.444' }),
+        postEphemeral: jest.fn().mockResolvedValue({}),
+      },
+    };
+
+    await publishPost(
+      { db, client, config: multiConfig, logger: console },
+      { parsed, userId: 'U_MARKETER', originChannelId: 'C_ORIGIN' }
+    );
+
+    expect(client.chat.postMessage).toHaveBeenCalledTimes(2);
+    expect(client.chat.postMessage).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({ channel: 'C_ADVOCACY1' })
+    );
+    expect(client.chat.postMessage).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ channel: 'C_ADVOCACY2' })
+    );
+    // Stores the first broadcast's location
+    expect(db.calls.updates[0]).toEqual({
+      table: 'posts',
+      cond: { id: 'post-uuid-1' },
+      patch: { slack_channel_id: 'C_ADVOCACY1', slack_message_ts: '111.222' },
+    });
+    expect(db.calls.deletes).toHaveLength(0);
+  });
+
+  test('reports partial broadcast failures but succeeds if at least one channel works', async () => {
+    const db = makeDbStub();
+    const multiConfig = { advocacyChannelIds: ['C_ADVOCACY1', 'C_ADVOCACY2'] };
+    const failure = new Error('An API error occurred');
+    failure.data = { error: 'channel_not_found' };
+    const client = {
+      chat: {
+        postMessage: jest
+          .fn()
+          .mockResolvedValueOnce({ channel: 'C_ADVOCACY1', ts: '111.222' })
+          .mockRejectedValueOnce(failure),
+        postEphemeral: jest.fn().mockResolvedValue({}),
+      },
+    };
+
+    await publishPost(
+      { db, client, config: multiConfig, logger: { warn: jest.fn() } },
+      { parsed, userId: 'U_MARKETER', originChannelId: 'C_ORIGIN' }
+    );
+
+    // Post was created and stored despite one channel failing
+    expect(db.calls.updates).toHaveLength(1);
+    expect(db.calls.deletes).toHaveLength(0);
   });
 });
