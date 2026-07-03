@@ -114,7 +114,13 @@ function fakeClient() {
   };
 }
 
-const quietLogger = { error: jest.fn(), warn: jest.fn(), log: jest.fn() };
+// Mirrors @slack/logger's real Logger interface (debug/info/warn/error —
+// no `.log`), not just whatever methods the code under test happens to
+// call. A mock shaped after the code instead of the real dependency is how
+// a stray `logger.log(...)` call (Bolt's real logger has no `.log`) shipped
+// to production and broke every share: the test's own ad-hoc mock had a
+// `.log` stub that matched the bug, so nothing caught it.
+const quietLogger = { debug: jest.fn(), info: jest.fn(), warn: jest.fn(), error: jest.fn() };
 
 function okShareClient() {
   return {
@@ -160,7 +166,7 @@ describe('runSharePipeline', () => {
     // Diagnostic line so a "no preview" report can be checked against what
     // actually shipped, without re-deriving it from the DB (Decision #19 is
     // unverified against a real destination site as of this writing).
-    expect(d.logger.log).toHaveBeenCalledWith(
+    expect(d.logger.info).toHaveBeenCalledWith(
       expect.stringContaining('link unfurl expected')
     );
 
