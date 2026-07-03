@@ -164,3 +164,25 @@ idempotent), so there's no separate release step.
 - [ ] Mock-mode smoke test passed end to end in the real workspace
 - [ ] `LINKEDIN_MOCK_MODE=false` flipped after product approval; a real share
       landed on a test LinkedIn profile
+
+---
+
+## 7. Optional: admin config UI (`/admin`)
+
+Lets a marketer manage a subset of the variables above at `https://<your-domain>/admin`
+instead of via Railway's dashboard — see `plans/env-var-ui-feature-spec.md` for
+what's in scope and why some variables (like `DATABASE_URL` and
+`MARKETER_SLACK_IDS` itself) are deliberately Railway-only.
+
+1. On the Slack app page → **OAuth & Permissions** → find the **"Sign in with
+   Slack"** (OpenID Connect) section → note the **Client ID** / **Client
+   Secret** shown there (these are separate from the bot token above).
+2. Add the redirect URL `https://<your-domain>/admin/login/callback` to that
+   section's allow-list.
+3. On Railway, set:
+   - `ADMIN_UI_ENABLED=true`
+   - `SLACK_CLIENT_ID` / `SLACK_CLIENT_SECRET` from step 1
+   - `ADMIN_SESSION_SECRET` — generate with `openssl rand -base64 32`
+     (don't reuse `OAUTH_STATE_SECRET`)
+4. Visit `/admin`, sign in with a Slack account whose ID is in
+   `MARKETER_SLACK_IDS`.

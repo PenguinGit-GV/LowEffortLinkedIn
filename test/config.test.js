@@ -96,4 +96,25 @@ describe('loadConfig', () => {
       );
     }
   });
+
+  test('admin UI is off by default and its secrets are optional', () => {
+    const config = loadConfig(validEnv());
+    expect(config.adminUiEnabled).toBe(false);
+    expect(config.slackClientId).toBeNull();
+    expect(config.adminSessionSecret).toBeNull();
+  });
+
+  test('requires Slack OpenID + session secrets only when ADMIN_UI_ENABLED is true', () => {
+    expect(() => loadConfig(validEnv({ ADMIN_UI_ENABLED: 'true' }))).toThrow(/SLACK_CLIENT_ID/);
+    const config = loadConfig(
+      validEnv({
+        ADMIN_UI_ENABLED: 'true',
+        SLACK_CLIENT_ID: 'cid',
+        SLACK_CLIENT_SECRET: 'csecret',
+        ADMIN_SESSION_SECRET: 'session-secret',
+      })
+    );
+    expect(config.adminUiEnabled).toBe(true);
+    expect(config.slackClientId).toBe('cid');
+  });
 });
