@@ -68,7 +68,9 @@ async function runPostExpiry({ db, slackClient, logger = console }, now = new Da
       );
     }
   }
-  if (due.length > 0) logger.log(`Post expiry: ${closed}/${due.length} cards closed`);
+  // .info(), not .log() — logger defaults to console, but the real Bolt
+  // Logger (no .log) works here too if a future change ever passes it in.
+  if (due.length > 0) logger.info(`Post expiry: ${closed}/${due.length} cards closed`);
   return { due: due.length, closed };
 }
 

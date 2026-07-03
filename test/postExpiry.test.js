@@ -82,7 +82,10 @@ function fakeDb({ duePosts, successCounts = {}, cardsByPost = {} } = {}) {
   return { db, postUpdates };
 }
 
-const quiet = { error: jest.fn(), log: jest.fn() };
+// Mirrors @slack/logger's real Logger interface (no .log) — see
+// test/share.test.js's quietLogger for why this matters: a mock with an
+// extra .log stub masked the exact bug that broke production once already.
+const quiet = { error: jest.fn(), info: jest.fn() };
 
 describe('runPostExpiry', () => {
   test('rebuilds the card without buttons, preserves the counter, then stamps', async () => {

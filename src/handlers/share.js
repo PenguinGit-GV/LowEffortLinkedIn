@@ -207,7 +207,9 @@ async function runSharePipeline(
     // embedded in commentary — unverified against a real destination site
     // as of this writing. Logged so a "no preview" report can be checked
     // against what actually shipped without re-deriving it from the DB.
-    logger.log(
+    // Bolt's real Logger interface has debug/info/warn/error — no `.log`
+    // (unlike console, which the mock LinkedIn client elsewhere assumes).
+    logger.info(
       `LinkedIn payload for post ${postId}: commentary ${payload.commentary.length} chars, ` +
         `content=${payload.content ? Object.keys(payload.content)[0] : 'none (link unfurl expected)'}`
     );

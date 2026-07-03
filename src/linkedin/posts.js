@@ -46,12 +46,15 @@ function buildSharePayload({ personId, commentary, destinationUrl, imageUrn }) {
 function createShareClient(config, { logger = console } = {}) {
   if (config.linkedinMockMode) {
     return {
+      // .info(), not .log() — logger defaults to console here, but nothing
+      // stops a caller from passing Bolt's real Logger instead, which has
+      // no .log (see src/handlers/share.js's history for exactly this bug).
       async uploadImage({ personId }) {
-        logger.log(`[linkedin-mock] image upload for urn:li:person:${personId}`);
+        logger.info(`[linkedin-mock] image upload for urn:li:person:${personId}`);
         return `urn:li:image:mock-${crypto.randomBytes(6).toString('hex')}`;
       },
       async createPost({ payload }) {
-        logger.log(`[linkedin-mock] post by ${payload.author} (${payload.commentary.length} chars)`);
+        logger.info(`[linkedin-mock] post by ${payload.author} (${payload.commentary.length} chars)`);
         return `urn:li:share:mock-${crypto.randomBytes(6).toString('hex')}`;
       },
     };
