@@ -149,11 +149,19 @@ const CLIENT_SCRIPT = `
         dialog.close();
         cancelBtn.removeEventListener('click', onCancel);
         applyBtn.removeEventListener('click', onApply);
+        dialog.removeEventListener('cancel', onCancel);
       }
       function onCancel() { cleanup(); resolve(false); }
       function onApply() { cleanup(); resolve(true); }
       cancelBtn.addEventListener('click', onCancel);
       applyBtn.addEventListener('click', onApply);
+      // The dialog's native 'cancel' event fires on ESC-key dismissal.
+      // Without this, ESC bypasses cleanup() entirely and leaks these
+      // listeners — the next confirmDialog() call stacks a second pair on
+      // the same shared buttons, so one real click fires every stacked
+      // handler at once (confirmed: a single Apply click fired two PUT
+      // requests and wrote two audit-log rows after one prior ESC-dismissal).
+      dialog.addEventListener('cancel', onCancel);
     });
   }
 
