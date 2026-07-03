@@ -88,4 +88,51 @@ describe('buildPostCard', () => {
     expect(texts).toContain('&lt;!channel&gt;');
     expect(texts).toContain('https://example.com/?a=1&amp;b=2');
   });
+
+  describe('sharing expiry', () => {
+    test('an active post with expires_at shows a "closes" segment and keeps its buttons', () => {
+      const blocks = buildPostCard({
+        post: post({ expires_at: '2026-07-02T20:00:00Z' }),
+        shareCount: 3,
+      });
+      expect(blocks.some((b) => b.type === 'actions')).toBe(true);
+      const context = blocks[blocks.length - 1];
+      expect(context.elements[0].text).toContain('✅ 3 shares');
+      expect(context.elements[0].text).toContain('Sharing closes');
+      expect(context.elements[0].text).not.toContain('Sharing closed');
+    });
+
+    test('an active post with no expires_at shows neither segment', () => {
+      const blocks = buildPostCard({ post: post(), shareCount: 0 });
+      const context = blocks[blocks.length - 1];
+      expect(context.elements[0].text).not.toContain('Sharing closes');
+      expect(context.elements[0].text).not.toContain('Sharing closed');
+    });
+
+    test('an expired post has no actions block and shows "Sharing closed"', () => {
+      const blocks = buildPostCard({
+        post: post({ expires_at: '2026-07-02T20:00:00Z', expired_at: '2026-07-02T20:01:00Z' }),
+        shareCount: 4,
+      });
+      expect(blocks.some((b) => b.type === 'actions')).toBe(false);
+      const context = blocks[blocks.length - 1];
+      expect(context.elements[0].text).toContain('✅ 4 shares');
+      expect(context.elements[0].text).toContain('⏰ Sharing closed');
+      expect(context.elements[0].text).not.toContain('Sharing closes <!date');
+    });
+
+    test('an expired post still renders captions and the image, just no buttons', () => {
+      const blocks = buildPostCard({
+        post: post({
+          caption_b: 'B text',
+          image_slack_file_id: 'F123',
+          expired_at: '2026-07-02T20:01:00Z',
+        }),
+        shareCount: 1,
+      });
+      expect(blocks.some((b) => b.type === 'image')).toBe(true);
+      expect(blocks.some((b) => b.type === 'section' && b.text.text === 'B text')).toBe(true);
+      expect(blocks.some((b) => b.type === 'actions')).toBe(false);
+    });
+  });
 });

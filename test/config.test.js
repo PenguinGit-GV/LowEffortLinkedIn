@@ -65,4 +65,23 @@ describe('loadConfig', () => {
     expect(config.linkedinMockMode).toBe(false);
     expect(config.linkedinClientId).toBe('cid');
   });
+
+  test('defaults DEFAULT_POST_EXPIRY_HOURS to 8 and POST_EXPIRY_CRON to every 15 minutes', () => {
+    const config = loadConfig(validEnv());
+    expect(config.defaultPostExpiryHours).toBe(8);
+    expect(config.postExpiryCron).toBe('*/15 * * * *');
+  });
+
+  test('accepts a custom DEFAULT_POST_EXPIRY_HOURS', () => {
+    const config = loadConfig(validEnv({ DEFAULT_POST_EXPIRY_HOURS: '24' }));
+    expect(config.defaultPostExpiryHours).toBe(24);
+  });
+
+  test('rejects a non-numeric, zero, negative, or out-of-range DEFAULT_POST_EXPIRY_HOURS', () => {
+    for (const bad of ['soon', '0', '-3', '721']) {
+      expect(() => loadConfig(validEnv({ DEFAULT_POST_EXPIRY_HOURS: bad }))).toThrow(
+        /DEFAULT_POST_EXPIRY_HOURS/
+      );
+    }
+  });
 });

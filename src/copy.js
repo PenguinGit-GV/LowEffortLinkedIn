@@ -30,4 +30,5 @@ module.exports = {
   C11_HEADER: (days, total) =>
     `🏆 *Top sharers, last ${days} days* — ${total} share${total === 1 ? '' : 's'} total`,
   C11_EMPTY: 'No shares in this window yet — be the first! 👀',
+  C12: '⏰ Sharing for this post has closed. Keep an eye out for the next one!',
 };

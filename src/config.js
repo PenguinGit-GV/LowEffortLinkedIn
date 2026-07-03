@@ -2,6 +2,10 @@
 // The server refuses to boot on a misconfigured environment rather than
 // limping into a state where e.g. nobody (or everybody) can create posts.
 
+// Shared with handlers/createPost.js so the modal's per-post override can't
+// drift from the bound this config enforces.
+const MAX_POST_EXPIRY_HOURS = 720; // 30 days
+
 function loadConfig(env = process.env) {
   const missing = [];
   const req = (name) => {
@@ -53,6 +57,20 @@ function loadConfig(env = process.env) {
     throw new Error(`PORT must be an integer between 1 and 65535, got "${env.PORT}"`);
   }
 
+  // Default sharing window for a new post; the marketer can override this
+  // per-post in /create-post, bounded by the same MAX_POST_EXPIRY_HOURS.
+  const defaultPostExpiryHours = Number.parseFloat(env.DEFAULT_POST_EXPIRY_HOURS || '8');
+  if (
+    !Number.isFinite(defaultPostExpiryHours) ||
+    defaultPostExpiryHours <= 0 ||
+    defaultPostExpiryHours > MAX_POST_EXPIRY_HOURS
+  ) {
+    throw new Error(
+      `DEFAULT_POST_EXPIRY_HOURS must be a number between 0 and ${MAX_POST_EXPIRY_HOURS}, ` +
+        `got "${env.DEFAULT_POST_EXPIRY_HOURS}"`
+    );
+  }
+
   return {
     slackBotToken,
     slackSigningSecret,
@@ -70,9 +88,13 @@ function loadConfig(env = process.env) {
     linkedinVersion: env.LINKEDIN_API_VERSION || '202506',
     // Daily token-expiry reminder schedule (UTC); validated at job start.
     reminderCron: env.REMINDER_CRON || '0 9 * * *',
+    defaultPostExpiryHours,
+    // Post-expiry windows are hours-scale, so this runs far more often than
+    // the daily token reminder; validated at job start.
+    postExpiryCron: env.POST_EXPIRY_CRON || '*/15 * * * *',
     port,
     nodeEnv: env.NODE_ENV || 'development',
   };
 }
 
-module.exports = { loadConfig };
+module.exports = { loadConfig, MAX_POST_EXPIRY_HOURS };

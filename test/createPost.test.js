@@ -18,9 +18,11 @@ function values(overrides = {}) {
   };
 }
 
+const OPTS = { defaultExpiryHours: 8 };
+
 describe('parseSubmission', () => {
-  test('parses a valid minimal submission', () => {
-    const { parsed, errors } = parseSubmission(values());
+  test('parses a valid minimal submission, defaulting the expiry window', () => {
+    const { parsed, errors } = parseSubmission(values(), OPTS);
     expect(errors).toBeNull();
     expect(parsed).toEqual({
       destination_url: 'https://example.com/launch',
@@ -28,6 +30,7 @@ describe('parseSubmission', () => {
       caption_b: null,
       caption_c: null,
       image_slack_file_id: null,
+      expiry_hours: 8,
     });
   });
 
@@ -36,39 +39,48 @@ describe('parseSubmission', () => {
       values({
         caption_b: { value: { value: '  B text  ' } },
         image: { value: { files: [{ id: 'F123' }] } },
-      })
+      }),
+      OPTS
     );
     expect(parsed.caption_b).toBe('B text');
     expect(parsed.image_slack_file_id).toBe('F123');
   });
 
   test('rejects a malformed URL', () => {
-    const { errors } = parseSubmission(values({ destination_url: { value: { value: 'not a url' } } }));
+    const { errors } = parseSubmission(
+      values({ destination_url: { value: { value: 'not a url' } } }),
+      OPTS
+    );
     expect(errors.destination_url).toMatch(/valid URL/);
   });
 
   test('rejects non-http(s) protocols', () => {
     const { errors } = parseSubmission(
-      values({ destination_url: { value: { value: 'javascript:alert(1)' } } })
+      values({ destination_url: { value: { value: 'javascript:alert(1)' } } }),
+      OPTS
     );
     expect(errors.destination_url).toMatch(/http/);
   });
 
   test('rejects a missing caption A', () => {
-    const { errors } = parseSubmission(values({ caption_a: { value: { value: '   ' } } }));
+    const { errors } = parseSubmission(values({ caption_a: { value: { value: '   ' } } }), OPTS);
     expect(errors.caption_a).toMatch(/required/);
   });
 
   test('rejects captions over the LinkedIn limit', () => {
     const { errors } = parseSubmission(
-      values({ caption_b: { value: { value: 'x'.repeat(CAPTION_MAX + 1) } } })
+      values({ caption_b: { value: { value: 'x'.repeat(CAPTION_MAX + 1) } } }),
+      OPTS
     );
     expect(errors.caption_b).toMatch(/3000/);
   });
 
   test('rejects a URL too long for the card section', () => {
     const longUrl = `https://example.com/${'a'.repeat(URL_MAX)}`;
-    const { errors } = parseSubmission(values({ destination_url: { value: { value: longUrl } } }));
+    const { errors } = parseSubmission(
+      values({ destination_url: { value: { value: longUrl } } }),
+      OPTS
+    );
     expect(errors.destination_url).toMatch(/too long/);
   });
 
@@ -79,7 +91,8 @@ describe('parseSubmission', () => {
         destination_url: { value: { value: url } },
         caption_b: { value: { value: 'y'.repeat(CAPTION_MAX - 50) } },
         image: { value: { files: [{ id: 'F123' }] } },
-      })
+      }),
+      OPTS
     );
     expect(errors.caption_b).toMatch(/image/);
   });
@@ -90,7 +103,8 @@ describe('parseSubmission', () => {
       values({
         destination_url: { value: { value: url } },
         caption_b: { value: { value: 'y'.repeat(CAPTION_MAX - 50) } },
-      })
+      }),
+      OPTS
     );
     expect(errors).toBeNull();
   });
@@ -99,9 +113,47 @@ describe('parseSubmission', () => {
     // Raw length is exactly at the LinkedIn cap, but every & becomes &amp;.
     const ampersandHeavy = '&'.repeat(CAPTION_MAX);
     const { errors } = parseSubmission(
-      values({ caption_a: { value: { value: ampersandHeavy } } })
+      values({ caption_a: { value: { value: ampersandHeavy } } }),
+      OPTS
     );
     expect(errors.caption_a).toMatch(/special characters/);
+  });
+
+  describe('expiry_hours', () => {
+    test('an explicit value overrides the default', () => {
+      const { parsed } = parseSubmission(
+        values({ expiry_hours: { value: { value: '24' } } }),
+        OPTS
+      );
+      expect(parsed.expiry_hours).toBe(24);
+    });
+
+    test('blank falls back to the default', () => {
+      const { parsed } = parseSubmission(
+        values({ expiry_hours: { value: { value: '' } } }),
+        { defaultExpiryHours: 8 }
+      );
+      expect(parsed.expiry_hours).toBe(8);
+    });
+
+    test('rejects zero, negative, non-numeric, and out-of-bounds values', () => {
+      for (const bad of ['0', '-5', 'soon', '721']) {
+        const { errors } = parseSubmission(
+          values({ expiry_hours: { value: { value: bad } } }),
+          OPTS
+        );
+        expect(errors.expiry_hours).toBeDefined();
+      }
+    });
+
+    test('accepts the upper bound (720)', () => {
+      const { parsed, errors } = parseSubmission(
+        values({ expiry_hours: { value: { value: '720' } } }),
+        OPTS
+      );
+      expect(errors).toBeNull();
+      expect(parsed.expiry_hours).toBe(720);
+    });
   });
 });
 
@@ -116,7 +168,11 @@ describe('view handler glue', () => {
       insert: () => ({ returning: async () => [{ id: 'post-uuid-1' }] }),
       where: () => ({ update: async () => 1, del: async () => 1 }),
     });
-    const config = { advocacyChannelId: 'C_ADVOCACY', marketerSlackIds: ['U_MARKETER'] };
+    const config = {
+      advocacyChannelId: 'C_ADVOCACY',
+      marketerSlackIds: ['U_MARKETER'],
+      defaultPostExpiryHours: 8,
+    };
     registerCreatePost(app, { config, db });
     return { handlers, config };
   }
@@ -185,13 +241,23 @@ describe('view handler glue', () => {
 
 describe('buildModal', () => {
   test('carries the origin channel in private_metadata and caps caption length', () => {
-    const modal = buildModal({ channelId: 'C_ORIGIN' });
+    const modal = buildModal({ channelId: 'C_ORIGIN', defaultExpiryHours: 8 });
     expect(JSON.parse(modal.private_metadata)).toEqual({ channel_id: 'C_ORIGIN' });
     const captionBlock = modal.blocks.find((b) => b.block_id === 'caption_a');
     expect(captionBlock.element.max_length).toBe(CAPTION_MAX);
     const imageBlock = modal.blocks.find((b) => b.block_id === 'image');
     expect(imageBlock.optional).toBe(true);
     expect(imageBlock.element.max_files).toBe(1);
+  });
+
+  test('the expiry field is optional, numeric, bounded, and shows the default', () => {
+    const modal = buildModal({ channelId: 'C_ORIGIN', defaultExpiryHours: 8 });
+    const expiryBlock = modal.blocks.find((b) => b.block_id === 'expiry_hours');
+    expect(expiryBlock.optional).toBe(true);
+    expect(expiryBlock.element.type).toBe('number_input');
+    expect(expiryBlock.element.min_value).toBe('1');
+    expect(expiryBlock.element.max_value).toBe('720');
+    expect(expiryBlock.label.text).toContain('8');
   });
 });
 
@@ -227,6 +293,7 @@ describe('publishPost', () => {
     caption_b: null,
     caption_c: null,
     image_slack_file_id: null,
+    expiry_hours: 8,
   };
 
   test('inserts, broadcasts, stores the card location, and confirms', async () => {
@@ -238,12 +305,19 @@ describe('publishPost', () => {
       },
     };
 
+    const before = Date.now();
     await publishPost(
       { db, client, config, logger: console },
       { parsed, userId: 'U_MARKETER', originChannelId: 'C_ORIGIN' }
     );
 
-    expect(db.calls.inserts[0].row.created_by_slack_id).toBe('U_MARKETER');
+    const insertedRow = db.calls.inserts[0].row;
+    expect(insertedRow.created_by_slack_id).toBe('U_MARKETER');
+    // expiry_hours is consumed to compute expires_at, not stored as its own column.
+    expect(insertedRow.expiry_hours).toBeUndefined();
+    const expiresAt = insertedRow.expires_at.getTime();
+    expect(expiresAt).toBeGreaterThanOrEqual(before + 8 * 3600 * 1000 - 2000);
+    expect(expiresAt).toBeLessThanOrEqual(Date.now() + 8 * 3600 * 1000 + 2000);
     expect(client.chat.postMessage).toHaveBeenCalledWith(
       expect.objectContaining({ channel: 'C_ADVOCACY', unfurl_links: true })
     );
