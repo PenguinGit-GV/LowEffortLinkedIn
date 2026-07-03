@@ -4,20 +4,23 @@ const { loadConfig } = require('./config');
 const { createDb } = require('./db/knex');
 const { createServer } = require('./server');
 const { startExpiryReminderJob } = require('./jobs/expiryReminder');
+const { startPostExpiryJob } = require('./jobs/postExpiry');
 
 async function main() {
   const config = loadConfig();
   const db = createDb(config);
   const { app } = createServer(config, db);
 
-  // Fail fast on a bad REMINDER_CRON before the server accepts traffic.
+  // Fail fast on a bad REMINDER_CRON/POST_EXPIRY_CRON before traffic is accepted.
   const reminderJob = startExpiryReminderJob({ config, db });
+  const postExpiryJob = startPostExpiryJob({ config, db });
 
   await app.start(config.port);
   console.log(
     `⚡ LowEffortLinkedIn listening on :${config.port}` +
       ` (env: ${config.nodeEnv}, LinkedIn mock mode: ${config.linkedinMockMode},` +
-      ` reminder cron: ${config.reminderCron})`
+      ` reminder cron: ${config.reminderCron}, post expiry: ${config.defaultPostExpiryHours}h` +
+      ` default / ${config.postExpiryCron})`
   );
 
   // Railway sends SIGTERM on redeploys; drain in-flight requests and release
@@ -33,6 +36,7 @@ async function main() {
     }, 10000).unref();
     try {
       reminderJob.stop();
+      postExpiryJob.stop();
       await app.stop();
       await db.destroy();
       process.exit(0);
