@@ -10,6 +10,19 @@ const POSTS_URL = 'https://api.linkedin.com/rest/posts';
 const IMAGES_URL = 'https://api.linkedin.com/rest/images';
 const HTTP_TIMEOUT_MS = 15_000;
 
+// LinkedIn's live Posts API rejects content.article without a title (PLAN.md
+// §10 flagged this exact schema-drift risk vs. the plan's representative
+// payload). We don't collect a headline from the marketer, so the domain
+// name is the title — always available, no length risk, and it doesn't
+// duplicate the caption text sitting right above it in the post.
+function articleTitle(destinationUrl) {
+  try {
+    return new URL(destinationUrl).hostname.replace(/^www\./, '');
+  } catch {
+    return destinationUrl; // already URL-validated at /create-post; belt and braces
+  }
+}
+
 // content is a oneOf: an article OR media, never both. With an image the
 // destination URL rides in the commentary as a trailing line so the link
 // still travels with the post (§4).
@@ -29,7 +42,10 @@ function buildSharePayload({ personId, commentary, destinationUrl, imageUrn }) {
       content: { media: { id: imageUrn } },
     };
   }
-  return { ...base, content: { article: { source: destinationUrl } } };
+  return {
+    ...base,
+    content: { article: { source: destinationUrl, title: articleTitle(destinationUrl) } },
+  };
 }
 
 // Client for the per-share LinkedIn calls. In mock mode nothing leaves the

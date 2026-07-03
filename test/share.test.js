@@ -143,7 +143,9 @@ describe('runSharePipeline', () => {
     expect(accessToken).toBe('linkedin-token');
     expect(payload.author).toBe('urn:li:person:PERSON1');
     expect(payload.commentary).toBe('Caption A text');
-    expect(payload.content).toEqual({ article: { source: 'https://example.com/blog' } });
+    expect(payload.content).toEqual({
+      article: { source: 'https://example.com/blog', title: 'example.com' },
+    });
 
     expect(d._dbParts.shareInserts).toEqual([
       expect.objectContaining({
