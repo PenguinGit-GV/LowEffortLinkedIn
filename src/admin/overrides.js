@@ -45,15 +45,19 @@ function mergeEffectiveConfig(envConfig, overrides) {
   return merged;
 }
 
-function maskForDisplay(displayValue, isSensitive) {
-  if (!isSensitive) return displayValue;
-  const str = String(displayValue);
+// Masking only applies to an actual value — masking the "(not set)"
+// placeholder itself would just show a confusing "••••set)" with nothing
+// real to hide.
+function maskForDisplay(value, isSensitive) {
+  if (value === null || value === undefined) return '(not set)';
+  if (!isSensitive) return String(value);
+  const str = String(value);
   return str.length <= 4 ? '••••' : `••••${str.slice(-4)}`;
 }
 
 // A few LinkedIn vars are null in mock mode (never set in the environment) —
-// String(null) would otherwise render the literal text "null" in the
-// dashboard and the audit trail.
+// String(null) would otherwise render the literal text "null" in the audit
+// trail.
 function displayOf(value) {
   return value === null || value === undefined ? '(not set)' : String(value);
 }
@@ -72,7 +76,7 @@ async function listManagedVars(envConfig, db, encryptionKey) {
       : envConfig[entry.configKey];
     return {
       key,
-      value: maskForDisplay(displayOf(runtimeValue), entry.sensitive),
+      value: maskForDisplay(runtimeValue, entry.sensitive),
       sensitive: entry.sensitive,
       reload: entry.reload,
       source: override ? 'override' : 'env',
@@ -122,7 +126,9 @@ async function applyOverride(db, encryptionKey, { key, rawValue, actorSlackId, e
     });
   });
 
-  return { reload: entry.reload };
+  // configKey/value let Phase 3's reload controller apply this to the live
+  // process without re-deriving the parsed runtime value itself.
+  return { reload: entry.reload, configKey: entry.configKey, value: entry.parse ? entry.parse(rawValue) : rawValue };
 }
 
 // -> null if there was no override to reset (caller should 404).
@@ -150,7 +156,7 @@ async function resetOverride(db, encryptionKey, { key, actorSlackId, envConfig }
     });
   });
 
-  return { reload: entry.reload };
+  return { reload: entry.reload, configKey: entry.configKey, value: envConfig[entry.configKey] };
 }
 
 async function listAudit(db, { key, page = 1, perPage = 20 } = {}) {

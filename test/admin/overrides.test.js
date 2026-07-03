@@ -118,6 +118,14 @@ describe('listManagedVars', () => {
     const redirectUri = vars.find((v) => v.key === 'LINKEDIN_REDIRECT_URI');
     expect(redirectUri.value).toBe('(not set)');
   });
+
+  test('an unset sensitive value shows "(not set)" plainly, not a masked mangling of the placeholder', async () => {
+    const { db } = fakeDb();
+    // LINKEDIN_CLIENT_ID is sensitive and null in mock mode.
+    const vars = await listManagedVars(envConfig(), db, KEY);
+    const clientId = vars.find((v) => v.key === 'LINKEDIN_CLIENT_ID');
+    expect(clientId.value).toBe('(not set)');
+  });
 });
 
 describe('applyOverride', () => {

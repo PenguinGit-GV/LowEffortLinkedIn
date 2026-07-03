@@ -17,15 +17,14 @@ function statusForError(err) {
   return err.code === 'NOT_MANAGED' ? 404 : 400;
 }
 
-// envConfig is the pure Railway-set defaults, independent of any override.
-// In Phase 1 that's simply the `config` this module is given (nothing
-// mutates it yet). Phase 3 introduces a live, in-place-mutated config object
-// for the rest of the app to read from — at that point this module should
-// be given the pristine boot-time snapshot instead, so a MUTATE-kind
-// override doesn't get mistaken for the env default on the next request.
-function registerAdminApi(router, { config, db, logger = console }) {
-  const envConfig = config;
+// envConfig is the pure Railway-set defaults, independent of any override —
+// distinct from `config`, which Phase 3's reload controller mutates in place
+// for RELOAD.MUTATE/CRON keys. Defaults to `config` itself so callers that
+// never wire hot-reload (most tests) still work: nothing mutates it then, so
+// the two stay identical.
+function registerAdminApi(router, { config, db, envConfig = config, reloadController, logger = console }) {
   const auth = requireAdminSession(config);
+  const applyReload = reloadController ? reloadController.applyReload : () => {};
   // Small, bounded body — these are single config values, not file uploads.
   const jsonBody = express.json({ limit: '16kb' });
 
@@ -53,6 +52,7 @@ function registerAdminApi(router, { config, db, logger = console }) {
         actorSlackId: req.adminSlackUserId,
         envConfig,
       });
+      applyReload(key, result.value);
       res.json({ ok: true, reload: result.reload });
     } catch (err) {
       if (err instanceof ConfigOverrideError) {
@@ -76,6 +76,7 @@ function registerAdminApi(router, { config, db, logger = console }) {
         res.status(404).json({ error: `"${key}" has no override to reset` });
         return;
       }
+      applyReload(key, result.value);
       res.json({ ok: true, reload: result.reload });
     } catch (err) {
       if (err instanceof ConfigOverrideError) {
