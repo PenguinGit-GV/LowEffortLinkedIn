@@ -11,6 +11,8 @@ const {
   listAudit,
   ConfigOverrideError,
 } = require('./overrides');
+const { createLockRegistry } = require('./locks');
+const { exportOverrides, planRestore, applyRestore } = require('./backup');
 
 function statusForError(err) {
   if (!(err instanceof ConfigOverrideError)) return 500;
@@ -25,8 +27,13 @@ function statusForError(err) {
 function registerAdminApi(router, { config, db, envConfig = config, reloadController, logger = console }) {
   const auth = requireAdminSession(config);
   const applyReload = reloadController ? reloadController.applyReload : () => {};
+  // One registry per running server, matching crypto/singleUse.js's
+  // in-memory-because-single-process rationale (Phase 4.3 edit locking).
+  const lockRegistry = createLockRegistry();
   // Small, bounded body — these are single config values, not file uploads.
   const jsonBody = express.json({ limit: '16kb' });
+  // Backups can legitimately hold every allow-listed key's value.
+  const restoreBody = express.json({ limit: '64kb' });
 
   router.get('/admin/api/config', auth, async (_req, res) => {
     try {
@@ -38,11 +45,34 @@ function registerAdminApi(router, { config, db, envConfig = config, reloadContro
     }
   });
 
+  // Best-effort reservation before an admin starts typing — see locks.js.
+  // Not required before a write (below), which re-checks ownership itself;
+  // this just lets the UI show "locked by X" before anyone has typed
+  // anything.
+  router.post('/admin/api/config/:key/lock', auth, (req, res) => {
+    const result = lockRegistry.acquire(req.params.key, req.adminSlackUserId);
+    if (!result.ok) {
+      res.status(409).json({ error: `${req.params.key} is locked for editing by another admin`, ...result });
+      return;
+    }
+    res.json(result);
+  });
+
+  router.delete('/admin/api/config/:key/lock', auth, (req, res) => {
+    lockRegistry.release(req.params.key, req.adminSlackUserId);
+    res.json({ ok: true });
+  });
+
   router.put('/admin/api/config/:key', auth, jsonBody, requireJsonContentType, async (req, res) => {
     const { key } = req.params;
     const rawValue = req.body && req.body.value;
     if (typeof rawValue !== 'string') {
       res.status(400).json({ error: '"value" must be a string' });
+      return;
+    }
+    const lockCheck = lockRegistry.check(key, req.adminSlackUserId);
+    if (!lockCheck.ok) {
+      res.status(409).json({ error: `${key} is locked for editing by another admin`, ...lockCheck });
       return;
     }
     try {
@@ -53,6 +83,7 @@ function registerAdminApi(router, { config, db, envConfig = config, reloadContro
         envConfig,
       });
       applyReload(key, result.value);
+      lockRegistry.release(key, req.adminSlackUserId);
       res.json({ ok: true, reload: result.reload });
     } catch (err) {
       if (err instanceof ConfigOverrideError) {
@@ -66,6 +97,11 @@ function registerAdminApi(router, { config, db, envConfig = config, reloadContro
 
   router.delete('/admin/api/config/:key', auth, async (req, res) => {
     const { key } = req.params;
+    const lockCheck = lockRegistry.check(key, req.adminSlackUserId);
+    if (!lockCheck.ok) {
+      res.status(409).json({ error: `${key} is locked for editing by another admin`, ...lockCheck });
+      return;
+    }
     try {
       const result = await resetOverride(db, config.tokenEncryptionKey, {
         key,
@@ -77,6 +113,7 @@ function registerAdminApi(router, { config, db, envConfig = config, reloadContro
         return;
       }
       applyReload(key, result.value);
+      lockRegistry.release(key, req.adminSlackUserId);
       res.json({ ok: true, reload: result.reload });
     } catch (err) {
       if (err instanceof ConfigOverrideError) {
@@ -96,6 +133,47 @@ function registerAdminApi(router, { config, db, envConfig = config, reloadContro
     } catch (err) {
       logger.error('GET /admin/api/audit failed:', err);
       res.status(500).json({ error: 'failed to load audit log' });
+    }
+  });
+
+  // Sensitive by nature (plaintext values of whatever's currently
+  // overridden) — behind the same requireAdminSession as everything else,
+  // no additional endpoint-specific gate.
+  router.get('/admin/api/backup', auth, async (_req, res) => {
+    try {
+      const entries = await exportOverrides(db, config.tokenEncryptionKey);
+      res.json({ exportedAt: new Date().toISOString(), entries });
+    } catch (err) {
+      logger.error('GET /admin/api/backup failed:', err);
+      res.status(500).json({ error: 'failed to export configuration' });
+    }
+  });
+
+  // { entries: [{key, value}], dryRun: boolean }. dryRun (the default)
+  // returns a diff without writing anything, so the UI can show what would
+  // change before an admin commits to it.
+  router.post('/admin/api/restore', auth, restoreBody, requireJsonContentType, async (req, res) => {
+    const entries = Array.isArray(req.body && req.body.entries) ? req.body.entries : null;
+    if (!entries || entries.some((e) => typeof e.key !== 'string' || typeof e.value !== 'string')) {
+      res.status(400).json({ error: '"entries" must be an array of { key, value } strings' });
+      return;
+    }
+    try {
+      if (req.body.dryRun !== false) {
+        const plan = await planRestore(db, config.tokenEncryptionKey, envConfig, entries);
+        res.json({ dryRun: true, plan });
+        return;
+      }
+      const results = await applyRestore(db, config.tokenEncryptionKey, {
+        entries,
+        actorSlackId: req.adminSlackUserId,
+        envConfig,
+        onApplied: applyReload,
+      });
+      res.json({ dryRun: false, results });
+    } catch (err) {
+      logger.error('POST /admin/api/restore failed:', err);
+      res.status(500).json({ error: 'failed to process restore' });
     }
   });
 }

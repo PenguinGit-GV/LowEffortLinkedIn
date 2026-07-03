@@ -78,11 +78,22 @@ describe('GET /admin/api/health', () => {
     expect(res.status).toBe(401);
   });
 
-  test('reports db/slack/linkedin status for an authenticated marketer', async () => {
+  test('reports db/slack/linkedin/environment status for an authenticated marketer', async () => {
     const slackClient = { auth: { test: async () => ({ ok: true }) } };
     const res = await buildApp(slackClient).get('/admin/api/health').set('Cookie', sessionCookie());
     expect(res.status).toBe(200);
-    expect(res.body).toEqual({ db: 'up', slack: 'up', linkedin: 'mock' });
+    expect(res.body).toEqual({ db: 'up', slack: 'up', linkedin: 'mock', environment: 'development' });
+  });
+
+  test('environment prefers RAILWAY_ENVIRONMENT_NAME over config.nodeEnv when set (Finding F4)', async () => {
+    const slackClient = { auth: { test: async () => ({ ok: true }) } };
+    process.env.RAILWAY_ENVIRONMENT_NAME = 'production';
+    try {
+      const res = await buildApp(slackClient).get('/admin/api/health').set('Cookie', sessionCookie());
+      expect(res.body.environment).toBe('production');
+    } finally {
+      delete process.env.RAILWAY_ENVIRONMENT_NAME;
+    }
   });
 
   test('reports slack: down when the auth.test call fails', async () => {
