@@ -7,9 +7,10 @@ describe('buildSharePayload', () => {
     personId: 'AbC123',
     commentary: 'Great read!',
     destinationUrl: 'https://example.com/post',
+    articleTitle: 'A Great Read — Example Blog',
   };
 
-  test('link-only post uses content.article, a title, and untouched commentary', () => {
+  test('link-only post uses content.article with the given title and untouched commentary', () => {
     const payload = buildSharePayload({ ...base, imageUrn: null });
     expect(payload).toEqual({
       author: 'urn:li:person:AbC123',
@@ -19,24 +20,12 @@ describe('buildSharePayload', () => {
       lifecycleState: 'PUBLISHED',
       isReshareDisabledByAuthor: false,
       content: {
-        article: { source: 'https://example.com/post', title: 'example.com' },
+        article: { source: 'https://example.com/post', title: 'A Great Read — Example Blog' },
       },
     });
   });
 
-  test('the article title is the bare hostname, without a leading www.', () => {
-    const payload = buildSharePayload({ ...base, destinationUrl: 'https://www.example.com/blog/post?x=1' });
-    expect(payload.content.article.title).toBe('example.com');
-  });
-
-  test('falls back to the raw URL as the title if hostname parsing somehow fails', () => {
-    // destination_url is already validated at /create-post, so this is a
-    // belt-and-braces path rather than a reachable real-world input.
-    const payload = buildSharePayload({ ...base, destinationUrl: 'not-a-valid-url' });
-    expect(payload.content.article.title).toBe('not-a-valid-url');
-  });
-
-  test('image post uses content.media and appends the URL to the commentary', () => {
+  test('image post uses content.media, appends the URL to the commentary, and carries no title', () => {
     const payload = buildSharePayload({ ...base, imageUrn: 'urn:li:image:xyz' });
     expect(payload.content).toEqual({ media: { id: 'urn:li:image:xyz' } });
     expect(payload.commentary).toBe('Great read!\n\nhttps://example.com/post');

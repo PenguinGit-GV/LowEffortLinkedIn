@@ -34,6 +34,7 @@ Choices locked in during planning, and why.
 | 14 | `/disconnect` | In MVP: self-service disconnect + full data erasure | `/disconnect` removes the LinkedIn connection; `/disconnect all` also erases share history. Makes the PRIVACY.md deletion promise self-service. |
 | 15 | Leaderboard | In MVP: `/advocacy-stats` command | Ephemeral, anyone can run it, top 10 sharers over a default 30-day window. All data already exists in `shares`. |
 | 16 | Company Pages & multi-workspace | Permanently out of scope | Internal tool, one workspace, personal profiles only — advocacy is employee voices, not the company page. Not on any roadmap. |
+| 17 | LinkedIn article title | Fetched from the destination page's real `<title>`, falling back to the bare hostname | The hostname-only title (added when the required-field schema-drift bug was hotfixed) worked but read as boring in the LinkedIn preview. Fetched once at `/create-post` time so a slow/unreachable source site never delays or breaks a Share click; failures fall back to the original hostname behavior. *(Renumber if this collides with another Decision #17 added in parallel — see §5's `posts` table for the same caveat.)* |
 
 ## 2. Feature Requirements
 
@@ -234,8 +235,9 @@ cron job (Railway cron or `node-cron` in-process) runs the token-expiry reminder
   LinkedIn, which is why the upload can't happen once at `/create-post` time.
 - **Posting:** `POST https://api.linkedin.com/rest/posts`, headers include
   `LinkedIn-Version: <YYYYMM>` and `X-Restli-Protocol-Version: 2.0.0`. Representative
-  payloads (verify exact schema against LinkedIn's live docs once Phase 0 access is
-  granted — these are illustrative, not a guarantee of the current contract):
+  payloads (verified against the live API once Phase 0 access was granted — the
+  schema-drift risk this section originally flagged materialized exactly once,
+  on `content.article.title`; see below):
 
   Link-only post (`content.article`):
 
@@ -245,11 +247,26 @@ cron job (Railway cron or `node-cron` in-process) runs the token-expiry reminder
     "commentary": "{caption text}",
     "visibility": "PUBLIC",
     "distribution": { "feedDistribution": "MAIN_FEED" },
-    "content": { "article": { "source": "{destination_url}" } },
+    "content": { "article": { "source": "{destination_url}", "title": "{article_title}" } },
     "lifecycleState": "PUBLISHED",
     "isReshareDisabledByAuthor": false
   }
   ```
+
+  `content.article.title` is **required** by the live API (confirmed the hard
+  way — LinkedIn rejects its absence with `field is required but not found and
+  has no default value`, not documented as a distinct field in the plan's
+  original representative payload). `article_title` is resolved once, at
+  `/create-post` time, from the destination page's real `<title>` tag —
+  fetched server-side with a 5s timeout and a capped read (a title always sits
+  in the first few KB of `<head>`; the connection is aborted once found or the
+  cap is hit, so a huge page is never downloaded in full) — and stored on
+  `posts.article_title` for every subsequent share of that post to reuse. Any
+  fetch failure (timeout, non-HTML response, no `<title>` tag, blocked
+  request) falls back to the bare hostname (e.g. `example.com`) — the original
+  stopgap value — so a slow or unreachable source site can never turn into a
+  broken or delayed share. The fetch runs once per post, not once per share,
+  so its latency/failure mode never touches the actual Share button click.
 
   Post with image: `content` is a oneOf in the Posts API — a post can carry an
   article **or** media, not both. When an image is attached, the payload uses
@@ -302,6 +319,8 @@ CREATE TABLE posts (
   slack_channel_id     TEXT,                -- where the card was broadcast
   slack_message_ts     TEXT,                -- card message ts, for chat.update
   created_by_slack_id  TEXT NOT NULL,
+  article_title        TEXT NOT NULL DEFAULT '', -- LinkedIn content.article.title;
+                                             -- resolved once at creation (§4)
   created_at           TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
@@ -415,6 +434,12 @@ Friendly-casual with emoji (Decision #10). These are the shipping strings;
 - Raw tokens and full LinkedIn payloads are never logged.
 - Server fails fast at startup if `MARKETER_SLACK_IDS` is empty/unset, rather than
   silently locking everyone out or (worse) leaving the command unrestricted.
+- The article-title fetch (§4, Decision #17) makes an outbound request to a
+  URL, but only one supplied by an already-authorized marketer (the same
+  `destination_url` gate as the rest of `/create-post`) — not arbitrary user
+  input. It's bounded regardless: 5s timeout, response capped at the first
+  64KB, non-HTML responses rejected without reading the body, and any failure
+  degrades to the hostname rather than erroring.
 
 ## 10. Risks & Mitigations
 

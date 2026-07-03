@@ -143,6 +143,8 @@ describe('runSharePipeline', () => {
     expect(accessToken).toBe('linkedin-token');
     expect(payload.author).toBe('urn:li:person:PERSON1');
     expect(payload.commentary).toBe('Caption A text');
+    // POST has no article_title (predates the column) — falls back to the
+    // hostname rather than sending an empty title to LinkedIn.
     expect(payload.content).toEqual({
       article: { source: 'https://example.com/blog', title: 'example.com' },
     });
@@ -184,6 +186,24 @@ describe('runSharePipeline', () => {
     expect(d.shareClient.createPost.mock.calls[0][0].payload.commentary).toBe('My own words');
     expect(d._dbParts.shareInserts[0]).toEqual(
       expect.objectContaining({ variation: 'CUSTOM', custom_text: 'My own words' })
+    );
+  });
+
+  test('uses the post-level article_title when it is set, instead of the hostname', async () => {
+    const post = { ...POST, article_title: 'A Great Read — Example Blog' };
+    const d = deps({ dbParts: fakeDb({ post }) });
+    await runSharePipeline(d, JOB);
+    expect(d.shareClient.createPost.mock.calls[0][0].payload.content).toEqual({
+      article: { source: 'https://example.com/blog', title: 'A Great Read — Example Blog' },
+    });
+  });
+
+  test('an empty-string article_title (backfilled legacy row) still falls back to the hostname', async () => {
+    const post = { ...POST, article_title: '' };
+    const d = deps({ dbParts: fakeDb({ post }) });
+    await runSharePipeline(d, JOB);
+    expect(d.shareClient.createPost.mock.calls[0][0].payload.content.article.title).toBe(
+      'example.com'
     );
   });
 

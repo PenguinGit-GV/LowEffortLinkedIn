@@ -6,6 +6,7 @@ const copy = require('../copy');
 const { buildPostCard } = require('../blocks/postCard');
 const { escapeMrkdwn } = require('../mrkdwn');
 const { postEphemeralSafely } = require('../slack/ephemeral');
+const { fetchArticleTitle: defaultFetchArticleTitle } = require('../linkedin/pageTitle');
 
 const MODAL_CALLBACK_ID = 'create_post_modal';
 // LinkedIn's commentary field limit (PLAN.md §2.1); enforced client-side via
@@ -147,15 +148,23 @@ function parseSubmission(values) {
   };
 }
 
-// Runs after ack(): insert → broadcast → store card location → confirm.
-// If the broadcast fails, the orphaned row is removed so the posts table only
-// ever holds posts that actually have a card.
-async function publishPost({ db, client, config, logger }, { parsed, userId, originChannelId }) {
+// Runs after ack(): resolve the LinkedIn article title → insert → broadcast
+// → store card location → confirm. If the broadcast fails, the orphaned row
+// is removed so the posts table only ever holds posts that actually have a
+// card.
+async function publishPost(
+  { db, client, config, logger, fetchArticleTitle = defaultFetchArticleTitle },
+  { parsed, userId, originChannelId }
+) {
+  // Once per post, not once per share (§4) — the fetch's latency/failure
+  // mode never touches the actual Share button click.
+  const articleTitle = await fetchArticleTitle(parsed.destination_url, { logger });
+
   const [{ id: postId }] = await db('posts')
-    .insert({ ...parsed, created_by_slack_id: userId })
+    .insert({ ...parsed, created_by_slack_id: userId, article_title: articleTitle })
     .returning('id');
 
-  const post = { ...parsed, id: postId, created_by_slack_id: userId };
+  const post = { ...parsed, id: postId, created_by_slack_id: userId, article_title: articleTitle };
   let broadcast;
   try {
     broadcast = await client.chat.postMessage({
@@ -186,7 +195,7 @@ async function publishPost({ db, client, config, logger }, { parsed, userId, ori
   );
 }
 
-function registerCreatePost(app, { config, db }) {
+function registerCreatePost(app, { config, db, fetchArticleTitle }) {
   app.command('/create-post', async ({ command, ack, respond, client, logger }) => {
     await ack();
     if (!config.marketerSlackIds.includes(command.user_id)) {
@@ -227,7 +236,7 @@ function registerCreatePost(app, { config, db }) {
 
     try {
       await publishPost(
-        { db, client, config, logger },
+        { db, client, config, logger, ...(fetchArticleTitle ? { fetchArticleTitle } : {}) },
         { parsed, userId: body.user.id, originChannelId }
       );
     } catch (err) {
