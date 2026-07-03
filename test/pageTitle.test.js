@@ -38,11 +38,26 @@ describe('fetchArticleTitle', () => {
     expect(title).toBe('AT&T — Home');
   });
 
-  test('sends an honest, identifiable User-Agent', async () => {
+  test('sends a browser-like User-Agent to avoid WAF blocks', async () => {
     mockHtmlResponse('<title>Hi</title>');
     await fetchArticleTitle('https://example.com', { logger: quiet });
     const [, opts] = axios.get.mock.calls[0];
-    expect(opts.headers['User-Agent']).toContain('LowEffortLinkedInBot');
+    expect(opts.headers['User-Agent']).toContain('Mozilla');
+  });
+
+  test('sends client-hint headers matching the spoofed User-Agent', async () => {
+    // A browser-like UA with none of these looks more like a spoofed
+    // request to a WAF than a plain, honest bot UA would.
+    mockHtmlResponse('<title>Hi</title>');
+    await fetchArticleTitle('https://example.com', { logger: quiet });
+    const [, opts] = axios.get.mock.calls[0];
+    expect(opts.headers['Sec-CH-UA']).toContain('Chromium');
+    expect(opts.headers['Sec-CH-UA-Mobile']).toBe('?0');
+    expect(opts.headers['Sec-CH-UA-Platform']).toBe('"Linux"');
+    expect(opts.headers['Sec-Fetch-Dest']).toBe('document');
+    expect(opts.headers['Sec-Fetch-Mode']).toBe('navigate');
+    expect(opts.headers['Sec-Fetch-Site']).toBe('none');
+    expect(opts.headers['Sec-Fetch-User']).toBe('?1');
   });
 
   test('collapses internal whitespace/newlines', async () => {

@@ -304,7 +304,7 @@ function registerCreatePost(app, { config, db, fetchArticleTitle }) {
 
     try {
       await publishPost(
-        { db, client, config, logger, ...(fetchArticleTitle ? { fetchArticleTitle } : {}) },
+        { db, client, config, logger, fetchArticleTitle },
         { parsed, userId: body.user.id, originChannelId }
       );
     } catch (err) {
