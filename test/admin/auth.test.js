@@ -100,7 +100,11 @@ describe('GET /admin/login/callback', () => {
     const cookie = res.headers['set-cookie'][0];
     expect(cookie).toContain('admin_session=');
     expect(cookie).toContain('HttpOnly');
-    expect(cookie).toContain('SameSite=Strict');
+    // Lax, not Strict: Strict withholds the cookie on the OAuth callback's
+    // own trailing redirect to /admin (the redirect chain started cross-site
+    // at slack.com), which loops the admin back into another Slack consent
+    // screen instead of landing them on the dashboard.
+    expect(cookie).toContain('SameSite=Lax');
   });
 
   test('a state token is single-use — replaying it within its TTL is rejected', async () => {

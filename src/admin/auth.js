@@ -77,10 +77,11 @@ function requireAdminSession(config) {
 }
 
 // Finding F6: a cross-site HTML form can't set a custom Content-Type of
-// application/json, and SameSite=Strict already blocks the session cookie
-// from riding along on a cross-site top-level navigation anyway — the two
-// together are a cheap, effective CSRF mitigation without a dedicated token
-// for what is a JSON-only API surface.
+// application/json — this alone is the CSRF mitigation for this JSON-only
+// API surface, without a dedicated token. (The session cookie is
+// SameSite=Lax, not Strict — see session.js's cookieAttrs for why — but Lax
+// already withholds the cookie on cross-site POST/PUT/DELETE, so it isn't
+// carrying any of the CSRF-defense weight here anyway.)
 function requireJsonContentType(req, res, next) {
   if (!req.is('application/json')) {
     res.status(415).json({ error: 'Content-Type must be application/json' });
