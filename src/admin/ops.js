@@ -5,6 +5,14 @@
 // endpoint discloses that in its own response rather than pretending
 // otherwise — it is not graceful in the sense of avoiding an outage window,
 // only in the sense of returning a response before exiting.
+//
+// Environment name (Finding F4): the roadmap's original Phase 4.1 asked for
+// live switching between Railway environments from one running instance.
+// That needs the OTHER environment's DATABASE_URL (and likely its
+// TOKEN_ENCRYPTION_KEY) available somewhere — the exact bootstrap-secret
+// problem the allow-list exists to avoid. Descoped to a read-only label
+// naming which environment THIS instance is running as, sourced from
+// Railway's own injected variable.
 
 const { requireAdminSession } = require('./auth');
 
@@ -35,12 +43,23 @@ function probeLinkedin(config) {
   return config.linkedinClientId && config.linkedinClientSecret ? 'configured' : 'not configured';
 }
 
+// Railway injects RAILWAY_ENVIRONMENT_NAME; config.nodeEnv is the fallback
+// for non-Railway (e.g. local dev) deployments.
+function currentEnvironmentName(config) {
+  return process.env.RAILWAY_ENVIRONMENT_NAME || config.nodeEnv;
+}
+
 function registerAdminOps(router, { config, db, slackClient, logger = console }) {
   const auth = requireAdminSession(config);
 
   router.get('/admin/api/health', auth, async (_req, res) => {
     const [dbStatus, slackStatus] = await Promise.all([probeDb(db), probeSlack(slackClient)]);
-    res.json({ db: dbStatus, slack: slackStatus, linkedin: probeLinkedin(config) });
+    res.json({
+      db: dbStatus,
+      slack: slackStatus,
+      linkedin: probeLinkedin(config),
+      environment: currentEnvironmentName(config),
+    });
   });
 
   router.post('/admin/api/restart', auth, (req, res) => {
@@ -55,4 +74,4 @@ function registerAdminOps(router, { config, db, slackClient, logger = console })
   });
 }
 
-module.exports = { registerAdminOps, probeDb, probeSlack, probeLinkedin };
+module.exports = { registerAdminOps, probeDb, probeSlack, probeLinkedin, currentEnvironmentName };

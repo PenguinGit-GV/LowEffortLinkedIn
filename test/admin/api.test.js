@@ -195,3 +195,151 @@ describe('GET /admin/api/audit', () => {
     expect(res.body.entries[0]).toMatchObject({ key: 'REMINDER_CRON', action: 'set', changed_by: 'U111' });
   });
 });
+
+describe('edit locking (Phase 4.3)', () => {
+  function twoAdminApp() {
+    return buildApp({ config: testConfig({ MARKETER_SLACK_IDS: 'U111,U222' }) });
+  }
+
+  test('a second admin cannot acquire a lock already held', async () => {
+    const { agent } = twoAdminApp();
+    await agent
+      .post('/admin/api/config/REMINDER_CRON/lock')
+      .set('Cookie', sessionCookie('U111'))
+      .expect(200);
+    const res = await agent.post('/admin/api/config/REMINDER_CRON/lock').set('Cookie', sessionCookie('U222'));
+    expect(res.status).toBe(409);
+    expect(res.body.lockedBy).toBe('U111');
+  });
+
+  test('a PUT from a second admin is rejected while the first holds the lock', async () => {
+    const { agent } = twoAdminApp();
+    await agent.post('/admin/api/config/REMINDER_CRON/lock').set('Cookie', sessionCookie('U111'));
+    const res = await agent
+      .put('/admin/api/config/REMINDER_CRON')
+      .set('Cookie', sessionCookie('U222'))
+      .send({ value: '0 12 * * *' });
+    expect(res.status).toBe(409);
+  });
+
+  test("a successful PUT releases the actor's own lock", async () => {
+    const { agent } = twoAdminApp();
+    await agent.post('/admin/api/config/REMINDER_CRON/lock').set('Cookie', sessionCookie('U111'));
+    await agent
+      .put('/admin/api/config/REMINDER_CRON')
+      .set('Cookie', sessionCookie('U111'))
+      .send({ value: '0 12 * * *' })
+      .expect(200);
+    // Now free for the other admin.
+    const res = await agent.post('/admin/api/config/REMINDER_CRON/lock').set('Cookie', sessionCookie('U222'));
+    expect(res.status).toBe(200);
+  });
+
+  test('explicit unlock frees the key for another admin', async () => {
+    const { agent } = twoAdminApp();
+    await agent.post('/admin/api/config/REMINDER_CRON/lock').set('Cookie', sessionCookie('U111'));
+    await agent.delete('/admin/api/config/REMINDER_CRON/lock').set('Cookie', sessionCookie('U111')).expect(200);
+    const res = await agent.post('/admin/api/config/REMINDER_CRON/lock').set('Cookie', sessionCookie('U222'));
+    expect(res.status).toBe(200);
+  });
+});
+
+describe('GET /admin/api/backup', () => {
+  test('exports current overrides with decrypted values', async () => {
+    const { agent } = buildApp({
+      overrideRows: [{ key: 'REMINDER_CRON', value: '0 10 * * *', is_sensitive: false, updated_by: 'U111' }],
+    });
+    const res = await agent.get('/admin/api/backup').set('Cookie', sessionCookie());
+    expect(res.status).toBe(200);
+    expect(res.body.entries).toEqual([{ key: 'REMINDER_CRON', value: '0 10 * * *' }]);
+    expect(res.body.exportedAt).toBeTruthy();
+  });
+
+  test('401s without a session', async () => {
+    const { agent } = buildApp();
+    const res = await agent.get('/admin/api/backup');
+    expect(res.status).toBe(401);
+  });
+});
+
+describe('POST /admin/api/restore', () => {
+  test('defaults to a dry run that reports a plan without writing anything', async () => {
+    const { agent, overridesMap } = buildApp();
+    const res = await agent
+      .post('/admin/api/restore')
+      .set('Cookie', sessionCookie())
+      .send({ entries: [{ key: 'REMINDER_CRON', value: '0 12 * * *' }] });
+    expect(res.status).toBe(200);
+    expect(res.body.dryRun).toBe(true);
+    expect(res.body.plan).toEqual([
+      {
+        key: 'REMINDER_CRON',
+        status: 'would-change',
+        from: 'env',
+        currentDisplay: '0 9 * * *',
+        newDisplay: '0 12 * * *',
+      },
+    ]);
+    expect(overridesMap.has('REMINDER_CRON')).toBe(false);
+  });
+
+  test('dryRun: false actually applies the entries and reloads the live config', async () => {
+    const config = testConfig();
+    const { db, overridesMap } = fakeAdminDb();
+    const { receiver } = createServer(config, db, baseOverrides);
+    const agent = request(receiver.app);
+
+    const res = await agent
+      .post('/admin/api/restore')
+      .set('Cookie', sessionCookie())
+      .send({ entries: [{ key: 'PUBLIC_BASE_URL', value: 'https://restored.up.railway.app' }], dryRun: false });
+
+    expect(res.status).toBe(200);
+    expect(res.body.results).toEqual([{ key: 'PUBLIC_BASE_URL', status: 'applied' }]);
+    expect(overridesMap.get('PUBLIC_BASE_URL').value).toBe('https://restored.up.railway.app');
+    expect(config.publicBaseUrl).toBe('https://restored.up.railway.app'); // MUTATE reload applied
+  });
+
+  test('a restore does not clobber a key another admin currently holds an edit-lock on', async () => {
+    const { agent, overridesMap } = buildApp({
+      config: testConfig({ MARKETER_SLACK_IDS: 'U111,U222' }),
+    });
+    await agent.post('/admin/api/config/REMINDER_CRON/lock').set('Cookie', sessionCookie('U111'));
+
+    const res = await agent
+      .post('/admin/api/restore')
+      .set('Cookie', sessionCookie('U222'))
+      .send({ entries: [{ key: 'REMINDER_CRON', value: '0 20 * * *' }], dryRun: false });
+
+    expect(res.status).toBe(200);
+    expect(res.body.results).toEqual([
+      { key: 'REMINDER_CRON', status: 'error', reason: 'locked for editing by U111' },
+    ]);
+    expect(overridesMap.has('REMINDER_CRON')).toBe(false);
+  });
+
+  test('a restore proceeds normally for keys with no active lock', async () => {
+    const { agent, overridesMap } = buildApp({
+      config: testConfig({ MARKETER_SLACK_IDS: 'U111,U222' }),
+    });
+    await agent.post('/admin/api/config/REMINDER_CRON/lock').set('Cookie', sessionCookie('U111'));
+
+    const res = await agent
+      .post('/admin/api/restore')
+      .set('Cookie', sessionCookie('U222'))
+      .send({ entries: [{ key: 'PUBLIC_BASE_URL', value: 'https://restored.up.railway.app' }], dryRun: false });
+
+    expect(res.status).toBe(200);
+    expect(res.body.results).toEqual([{ key: 'PUBLIC_BASE_URL', status: 'applied' }]);
+    expect(overridesMap.get('PUBLIC_BASE_URL').value).toBe('https://restored.up.railway.app');
+  });
+
+  test('400s a malformed entries payload', async () => {
+    const { agent } = buildApp();
+    const res = await agent
+      .post('/admin/api/restore')
+      .set('Cookie', sessionCookie())
+      .send({ entries: [{ key: 'REMINDER_CRON' }] }); // missing value
+    expect(res.status).toBe(400);
+  });
+});

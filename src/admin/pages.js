@@ -251,7 +251,17 @@ const CLIENT_SCRIPT = `
     card.appendChild(editRow);
 
     editBtn.addEventListener('click', function () {
-      editRow.style.display = editRow.style.display === 'flex' ? 'none' : 'flex';
+      if (editRow.style.display === 'flex') {
+        // Closing without saving — release any lock we're holding so
+        // another admin isn't blocked by an abandoned edit.
+        api('/admin/api/config/' + encodeURIComponent(item.key) + '/lock', { method: 'DELETE' }).catch(function () {});
+        editRow.style.display = 'none';
+        return;
+      }
+      clearError();
+      api('/admin/api/config/' + encodeURIComponent(item.key) + '/lock', { method: 'POST' })
+        .then(function () { editRow.style.display = 'flex'; })
+        .catch(function (err) { showError(err.message); });
     });
 
     return card;
@@ -314,11 +324,139 @@ const CLIENT_SCRIPT = `
     return api('/admin/api/health').then(function (body) {
       var container = document.getElementById('health-status');
       container.innerHTML = '';
+      // environment is a descriptive label, not a health status — it never
+      // gets the ok/bad coloring the other three probes do.
+      var envPill = el('span', { className: 'badge', text: 'environment: ' + body.environment });
+      envPill.style.marginRight = '8px';
+      container.appendChild(envPill);
       ['db', 'slack', 'linkedin'].forEach(function (key) {
         var pill = el('span', { className: 'badge ' + statusBadgeClass(body[key]), text: key + ': ' + body[key] });
         pill.style.marginRight = '8px';
         container.appendChild(pill);
       });
+    });
+  }
+
+  function downloadJson(filename, data) {
+    var blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  }
+
+  function planRowDetail(row) {
+    // Masked before/after (see src/admin/backup.js's planRestore) — never
+    // the raw value, so a sensitive key's diff doesn't put a secret on
+    // screen in plaintext.
+    if (row.currentDisplay !== undefined && row.newDisplay !== undefined) {
+      return row.currentDisplay + ' → ' + row.newDisplay;
+    }
+    return row.reason || row.from || '';
+  }
+
+  function renderRestorePlan(plan) {
+    var container = document.getElementById('restore-plan');
+    container.innerHTML = '';
+    var table = document.createElement('table');
+    var thead = document.createElement('thead');
+    var headRow = document.createElement('tr');
+    ['Key', 'Status', 'Detail'].forEach(function (text) {
+      var th = document.createElement('th');
+      th.textContent = text;
+      headRow.appendChild(th);
+    });
+    thead.appendChild(headRow);
+    table.appendChild(thead);
+    var tbody = document.createElement('tbody');
+    plan.forEach(function (row) {
+      var tr = document.createElement('tr');
+      [row.key, row.status, planRowDetail(row)].forEach(function (text) {
+        var td = document.createElement('td');
+        td.textContent = text;
+        tr.appendChild(td);
+      });
+      tbody.appendChild(tr);
+    });
+    table.appendChild(tbody);
+    container.appendChild(table);
+  }
+
+  function wireBackupRestore() {
+    document.getElementById('backup-btn').addEventListener('click', function () {
+      clearError();
+      api('/admin/api/backup')
+        .then(function (body) { downloadJson('config-backup-' + Date.now() + '.json', body); })
+        .catch(function (err) { showError(err.message); });
+    });
+
+    var fileInput = document.getElementById('restore-file');
+    var pendingEntries = null;
+    var confirmBtn = document.getElementById('confirm-restore-btn');
+    confirmBtn.style.display = 'none';
+
+    fileInput.addEventListener('change', function () {
+      var file = fileInput.files[0];
+      if (!file) return;
+      clearError();
+      var reader = new FileReader();
+      reader.onload = function () {
+        var parsed;
+        try {
+          parsed = JSON.parse(reader.result);
+        } catch (e) {
+          showError('That file is not valid JSON.');
+          return;
+        }
+        pendingEntries = parsed.entries || [];
+        api('/admin/api/restore', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ entries: pendingEntries, dryRun: true }),
+        })
+          .then(function (body) {
+            renderRestorePlan(body.plan);
+            confirmBtn.style.display = 'inline-block';
+          })
+          .catch(function (err) { showError(err.message); });
+      };
+      reader.readAsText(file);
+    });
+
+    confirmBtn.addEventListener('click', function () {
+      if (!pendingEntries) return;
+      confirmDialog('Apply this restore? Values shown as "would-change" above will be overwritten.').then(
+        function (ok) {
+          if (!ok) return;
+          clearError();
+          api('/admin/api/restore', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ entries: pendingEntries, dryRun: false }),
+          })
+            .then(function (body) {
+              // The server applies sequentially and keeps going on a
+              // per-key failure — a restore that partially fails must not
+              // look identical to one that fully succeeded.
+              var failed = body.results.filter(function (r) { return r.status === 'error'; });
+              renderRestorePlan(body.results);
+              pendingEntries = null;
+              confirmBtn.style.display = 'none';
+              fileInput.value = '';
+              if (failed.length) {
+                showError(failed.length + ' of ' + body.results.length + ' entries could not be applied — see the table above.');
+              } else {
+                document.getElementById('restore-plan').innerHTML = '';
+              }
+              return refresh();
+            })
+            .catch(function (err) { showError(err.message); });
+        }
+      );
     });
   }
 
@@ -346,6 +484,7 @@ const CLIENT_SCRIPT = `
 
   clearError();
   wireHealthAndRestart();
+  wireBackupRestore();
   refresh().catch(function (err) { showError(err.message); });
 })();
 `;
@@ -380,6 +519,20 @@ function renderDashboard() {
         <button class="btn-secondary" id="check-health-btn">Check now</button>
         <button class="btn-secondary" id="restart-btn">Restart service</button>
       </div>
+    </div>
+
+    <h2>Backup &amp; Restore</h2>
+    <p class="lead" style="margin-bottom:16px">Exports include the decrypted values of anything currently overridden — treat the downloaded file like any other secret.</p>
+    <div class="card">
+      <div class="row">
+        <button class="btn-secondary" id="backup-btn">Download backup</button>
+        <label class="btn-secondary" style="cursor:pointer">
+          Restore from file
+          <input type="file" id="restore-file" accept="application/json" style="display:none">
+        </label>
+        <button class="btn-primary" id="confirm-restore-btn">Apply restore</button>
+      </div>
+      <div id="restore-plan" style="margin-top:16px"></div>
     </div>
 
     <h2>Audit Log</h2>
