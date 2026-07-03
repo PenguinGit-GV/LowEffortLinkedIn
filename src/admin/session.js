@@ -28,12 +28,22 @@ function parseCookies(req) {
   }, {});
 }
 
-// HttpOnly (no JS access) + SameSite=Strict (spec Finding F6's CSRF
-// mitigation, paired with requireJsonContentType in auth.js) + Secure in
-// production (Railway is always HTTPS; local dev over http would silently
-// drop a Secure cookie).
+// HttpOnly (no JS access) + SameSite=Lax + Secure in production (Railway is
+// always HTTPS; local dev over http would silently drop a Secure cookie).
+//
+// Lax, not Strict: the Sign-in-with-Slack callback lands via a cross-site
+// redirect chain (slack.com -> .../admin/login/callback -> .../admin), and
+// browsers key "site for cookies" off where a redirect chain started, not
+// each individual hop — so a Strict cookie set mid-chain is stored but
+// withheld on that chain's own trailing redirect to /admin, bouncing the
+// admin straight back into another Slack consent screen (confirmed: this
+// shipped as Strict and produced exactly that login loop). Lax still
+// withholds the cookie on cross-site POST/PUT/DELETE, which is what
+// actually matters for CSRF on the mutating admin API; the real mitigation
+// there is requireJsonContentType (spec Finding F6) below, which a
+// cross-site <form> can't satisfy regardless of SameSite.
 function cookieAttrs(config, extra = []) {
-  const attrs = ['Path=/admin', 'HttpOnly', 'SameSite=Strict', ...extra];
+  const attrs = ['Path=/admin', 'HttpOnly', 'SameSite=Lax', ...extra];
   if (config.nodeEnv === 'production') attrs.push('Secure');
   return attrs;
 }
