@@ -2,6 +2,7 @@
 Low Effort employee advocacy tool for startups who have employees with LinkedIn disabilities.
 
 Use Case: Difficulty getting employees outside of marketing to share social media posts. 
+
 Solution: A marketer types /create-post within a slack channel, enters URL of the articl to share, up to 3 variations of the post text, an optional image and sends. Other employees ust connect their personal LinkedIn accounts once, then they just click on the Slack-native button, and the post is auto-shared. Takes 1 click and they never leave slack. 
 
 
