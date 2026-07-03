@@ -273,10 +273,11 @@ describe('runSharePipeline', () => {
     );
   });
 
-  test('a post-level article_title (from a pre-existing row) is not used in the payload', async () => {
-    // article_title is still fetched/stored at /create-post time, but the
-    // LinkedIn payload no longer builds a content.article from it — the
-    // destination URL travels in the commentary and LinkedIn unfurls it.
+  test('a stray post-level article_title (pre-drop-migration row shape) is not used in the payload', async () => {
+    // The article_title column is dropped and its fetcher deleted — the
+    // LinkedIn payload never builds a content.article; the destination URL
+    // travels in the commentary and LinkedIn unfurls it. A row read before
+    // the migration ran (or a cached shape) must still produce the same payload.
     const post = { ...POST, article_title: 'A Great Read — Example Blog' };
     const d = deps({ dbParts: fakeDb({ post }) });
     await runSharePipeline(d, JOB);

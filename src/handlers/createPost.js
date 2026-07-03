@@ -7,7 +7,6 @@ const { buildPostCard } = require('../blocks/postCard');
 const { escapeMrkdwn } = require('../mrkdwn');
 const { postEphemeralSafely } = require('../slack/ephemeral');
 const { recordPostCards } = require('../db/postCards');
-const { fetchArticleTitle: defaultFetchArticleTitle } = require('../linkedin/pageTitle');
 const { MAX_POST_EXPIRY_HOURS } = require('../config');
 
 const MODAL_CALLBACK_ID = 'create_post_modal';
@@ -180,30 +179,23 @@ function parseSubmission(values, { defaultExpiryHours } = {}) {
   };
 }
 
-// Runs after ack(): resolve the LinkedIn article title → insert → broadcast →
-// record card locations → confirm. Broadcasts to every channel in
+// Runs after ack(): insert → broadcast → record card locations → confirm.
+// Broadcasts to every channel in
 // config.advocacyChannelIds; each successful card's (channel, ts) is recorded
 // in post_cards so the share counter and the expiry job can update all of
 // them. If every channel fails, the orphaned row is removed so the posts table
 // only holds posts that actually have a card. A partial failure still
 // succeeds — the confirmation lists only the channels that received the card,
 // and the failures are logged.
-async function publishPost(
-  { db, client, config, logger, fetchArticleTitle = defaultFetchArticleTitle },
-  { parsed, userId, originChannelId }
-) {
+async function publishPost({ db, client, config, logger }, { parsed, userId, originChannelId }) {
   const { expiry_hours: expiryHours, ...postFields } = parsed;
   const expiresAt = new Date(Date.now() + expiryHours * 60 * 60 * 1000);
-  // Once per post, not once per share (§4) — the fetch's latency/failure
-  // mode never touches the actual Share button click.
-  const articleTitle = await fetchArticleTitle(postFields.destination_url, { logger });
 
   const [{ id: postId }] = await db('posts')
     .insert({
       ...postFields,
       created_by_slack_id: userId,
       expires_at: expiresAt,
-      article_title: articleTitle,
     })
     .returning('id');
 
@@ -212,7 +204,6 @@ async function publishPost(
     id: postId,
     created_by_slack_id: userId,
     expires_at: expiresAt,
-    article_title: articleTitle,
   };
   const broadcasts = [];
   const errors = [];
@@ -263,7 +254,7 @@ async function publishPost(
   await postEphemeralSafely({ client, logger }, originChannelId, userId, copy.C9(channelList));
 }
 
-function registerCreatePost(app, { config, db, fetchArticleTitle }) {
+function registerCreatePost(app, { config, db }) {
   app.command('/create-post', async ({ command, ack, respond, client, logger }) => {
     await ack();
     if (!config.marketerSlackIds.includes(command.user_id)) {
@@ -305,10 +296,7 @@ function registerCreatePost(app, { config, db, fetchArticleTitle }) {
     }
 
     try {
-      await publishPost(
-        { db, client, config, logger, fetchArticleTitle },
-        { parsed, userId: body.user.id, originChannelId }
-      );
+      await publishPost({ db, client, config, logger }, { parsed, userId: body.user.id, originChannelId });
     } catch (err) {
       logger.error('publishPost failed', err);
       await postEphemeralSafely(

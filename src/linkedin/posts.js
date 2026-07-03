@@ -17,7 +17,7 @@ const HTTP_TIMEOUT_MS = 15_000;
 //
 // This used to build an explicit `content.article` (with `source` +
 // `title`) instead. That required us to fetch the destination page's real
-// <title> server-side (src/linkedin/pageTitle.js) — which reliably failed
+// <title> server-side (the since-deleted pageTitle.js) — which reliably failed
 // for real destination sites: cloud-hosting IP ranges (Railway included)
 // are commonly blocked/challenged by WAFs like Cloudflare on IP reputation
 // alone, independent of headers, so no amount of User-Agent/header tuning

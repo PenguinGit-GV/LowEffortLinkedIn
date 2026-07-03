@@ -49,11 +49,7 @@ function createServer(config, db, overrides = {}) {
     }
   });
 
-  registerCreatePost(app, {
-    config,
-    db,
-    ...(overrides.fetchArticleTitle ? { fetchArticleTitle: overrides.fetchArticleTitle } : {}),
-  });
+  registerCreatePost(app, { config, db });
   registerShareHandlers(app, {
     config,
     db,
