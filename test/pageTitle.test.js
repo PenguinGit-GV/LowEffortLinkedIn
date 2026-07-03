@@ -38,11 +38,11 @@ describe('fetchArticleTitle', () => {
     expect(title).toBe('AT&T — Home');
   });
 
-  test('sends an honest, identifiable User-Agent', async () => {
+  test('sends a browser-like User-Agent to avoid WAF blocks', async () => {
     mockHtmlResponse('<title>Hi</title>');
     await fetchArticleTitle('https://example.com', { logger: quiet });
     const [, opts] = axios.get.mock.calls[0];
-    expect(opts.headers['User-Agent']).toContain('LowEffortLinkedInBot');
+    expect(opts.headers['User-Agent']).toContain('Mozilla');
   });
 
   test('collapses internal whitespace/newlines', async () => {
