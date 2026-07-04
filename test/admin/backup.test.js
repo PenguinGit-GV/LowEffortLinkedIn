@@ -102,6 +102,18 @@ describe('planRestore', () => {
     expect(plan).toEqual([{ key: 'REMINDER_CRON', status: 'unchanged' }]);
   });
 
+  test('an equivalent value that only differs in formatting is unchanged, not would-change', async () => {
+    const { db } = fakeDb();
+    // envConfig()'s ADVOCACY_CHANNEL_ID is 'C123' — parsed to ['C123'], the
+    // same list this differently-formatted raw string parses to. Comparing
+    // String(parsedEnvValue) against the raw backup string used to report
+    // this as would-change, and applying it created a redundant override.
+    const plan = await planRestore(db, KEY, envConfig(), [
+      { key: 'ADVOCACY_CHANNEL_ID', value: ' C123 ' },
+    ]);
+    expect(plan).toEqual([{ key: 'ADVOCACY_CHANNEL_ID', status: 'unchanged' }]);
+  });
+
   test('flags a genuine change as would-change, noting the current source', async () => {
     const { db } = fakeDb();
     const plan = await planRestore(db, KEY, envConfig(), [{ key: 'REMINDER_CRON', value: '0 12 * * *' }]);
