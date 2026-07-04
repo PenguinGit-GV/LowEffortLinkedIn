@@ -31,6 +31,13 @@ const inFlight = new Set();
 const is401 = (err) => err.response?.status === 401 && !err.isCdnUpload;
 const linkedinErrorText = (err) =>
   err.response?.data?.message || err.data?.error || err.message || 'unknown error';
+// Never log the raw error object here: axios errors carry the whole request
+// config, including the Authorization header — the member's plaintext
+// LinkedIn access token (or the Slack bot token for file fetches), the very
+// values tokenCipher.js encrypts at rest. Status + message is enough to
+// debug, same discipline as routes/auth.js's OAuth exchange.
+const linkedinErrorLogLine = (err) =>
+  `${err.response?.status || ''} ${linkedinErrorText(err)}`.trim();
 
 // Trigger point 3 from §2.2: LinkedIn said 401 mid-share (token revoked on
 // their side) — treat identically to "not connected": clear the stored
@@ -193,7 +200,7 @@ async function runSharePipeline(
           await handleRevokedToken({ db, config, client }, { userId, channelId });
           return;
         }
-        logger.error('Share image step failed', err);
+        logger.error(`Share image step failed: ${linkedinErrorLogLine(err)}`);
         await failShare(`image upload failed: ${linkedinErrorText(err)}`);
         return;
       }
@@ -225,7 +232,7 @@ async function runSharePipeline(
         await handleRevokedToken({ db, config, client }, { userId, channelId });
         return;
       }
-      logger.error('LinkedIn post failed', err);
+      logger.error(`LinkedIn post failed: ${linkedinErrorLogLine(err)}`);
       await failShare(linkedinErrorText(err));
       return;
     }
