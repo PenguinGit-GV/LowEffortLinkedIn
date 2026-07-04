@@ -114,6 +114,15 @@ async function applyOverride(db, encryptionKey, { key, rawValue, actorSlackId, e
   }
 
   const overrides = await loadOverrides(db, encryptionKey);
+  // Per-key validate() can't see the rest of the config; entries whose
+  // validity depends on other keys (LINKEDIN_MOCK_MODE needs the LinkedIn
+  // credentials) veto based on the effective config this write would
+  // produce at the next boot.
+  if (entry.crossValidate) {
+    const effective = mergeEffectiveConfig(envConfig, { ...overrides, [key]: { raw: rawValue } });
+    const crossError = entry.crossValidate(effective);
+    if (crossError) throw new ConfigOverrideError(crossError, 'INVALID_VALUE');
+  }
   const priorRaw = overrides[key] ? overrides[key].raw : displayOf(envConfig[entry.configKey]);
   const oldDisplay = redactForAudit(priorRaw, entry.sensitive);
   const newDisplay = redactForAudit(rawValue, entry.sensitive);

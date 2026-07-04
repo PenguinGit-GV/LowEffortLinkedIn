@@ -257,6 +257,44 @@ describe('applyOverride', () => {
     expect(auditRows[0].new_value_display).toContain('redacted');
   });
 
+  test('rejects flipping LINKEDIN_MOCK_MODE to false while the LinkedIn credentials are unset', async () => {
+    // envConfig() boots in mock mode with no LINKEDIN_* vars — exactly the
+    // state where config.js never required them. The override layer must not
+    // create a config that would boot in real mode with null credentials.
+    const { db, overridesMap } = fakeDb();
+    await expect(
+      applyOverride(db, KEY, {
+        key: 'LINKEDIN_MOCK_MODE',
+        rawValue: 'false',
+        actorSlackId: 'U111',
+        envConfig: envConfig(),
+      })
+    ).rejects.toMatchObject({ code: 'INVALID_VALUE' });
+    expect(overridesMap.has('LINKEDIN_MOCK_MODE')).toBe(false);
+  });
+
+  test('allows LINKEDIN_MOCK_MODE=false once the credentials exist (env or override)', async () => {
+    const { db } = fakeDb({
+      overrideRows: [
+        { key: 'LINKEDIN_CLIENT_ID', value: encryptToken('id', KEY), is_sensitive: true },
+        { key: 'LINKEDIN_CLIENT_SECRET', value: encryptToken('secret', KEY), is_sensitive: true },
+        {
+          key: 'LINKEDIN_REDIRECT_URI',
+          value: 'https://example.up.railway.app/auth/linkedin/callback',
+          is_sensitive: false,
+        },
+      ],
+    });
+    await expect(
+      applyOverride(db, KEY, {
+        key: 'LINKEDIN_MOCK_MODE',
+        rawValue: 'false',
+        actorSlackId: 'U111',
+        envConfig: envConfig(),
+      })
+    ).resolves.toMatchObject({ reload: 'restart', value: false });
+  });
+
   test('overwriting an existing override records the prior value as old_value_display', async () => {
     const { db, auditRows } = fakeDb({
       overrideRows: [

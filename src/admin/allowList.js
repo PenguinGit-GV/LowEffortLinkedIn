@@ -120,6 +120,18 @@ const ALLOW_LIST = Object.freeze({
     reload: RELOAD.RESTART,
     validate: isValidBool,
     parse: (v) => v === 'true',
+    // config.js only requires the LINKEDIN_* vars at boot when the ENV says
+    // mock mode is off — an override merges in after that validation ran, so
+    // flipping to real mode here must carry the same cross-field check
+    // itself. Without it the next restart boots in real mode with
+    // client_id=null: every connect link redirects to a broken LinkedIn
+    // authorize URL and every real share 401s, with no boot error.
+    crossValidate: (effective) =>
+      effective.linkedinMockMode === false &&
+      !(effective.linkedinClientId && effective.linkedinClientSecret && effective.linkedinRedirectUri)
+        ? 'LINKEDIN_MOCK_MODE can only be "false" once LINKEDIN_CLIENT_ID, ' +
+          'LINKEDIN_CLIENT_SECRET and LINKEDIN_REDIRECT_URI are configured'
+        : null,
   },
   LINKEDIN_API_VERSION: {
     configKey: 'linkedinVersion',

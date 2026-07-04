@@ -27,6 +27,22 @@ async function main() {
   // the UI got turned off afterward.
   const overrides = await loadOverrides(db, envConfig.tokenEncryptionKey);
   const config = mergeEffectiveConfig(envConfig, overrides);
+  // Overrides merge in AFTER loadConfig's fail-fast validation ran (which
+  // only saw the env's mock-mode flag), so re-check the one cross-field
+  // invariant they can break. applyOverride rejects creating this state, but
+  // a row written before that guard existed (or a hand-edited one) must not
+  // boot the app into real mode with null credentials — and crashing here
+  // would take down the admin UI that could fix it, so fall back loudly.
+  if (
+    !config.linkedinMockMode &&
+    !(config.linkedinClientId && config.linkedinClientSecret && config.linkedinRedirectUri)
+  ) {
+    console.error(
+      'Ignoring LINKEDIN_MOCK_MODE=false override: LINKEDIN_CLIENT_ID, LINKEDIN_CLIENT_SECRET ' +
+        'and LINKEDIN_REDIRECT_URI are not configured — staying in mock mode'
+    );
+    config.linkedinMockMode = true;
+  }
   // Mutable holder so the reload controller's cron-job restop (stop the old
   // task, start a new one with the updated schedule) and this file's
   // shutdown hook always reference the current task, never one captured at
