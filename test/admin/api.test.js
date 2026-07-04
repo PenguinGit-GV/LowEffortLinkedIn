@@ -253,6 +253,8 @@ describe('GET /admin/api/backup', () => {
     expect(res.status).toBe(200);
     expect(res.body.entries).toEqual([{ key: 'REMINDER_CRON', value: '0 10 * * *' }]);
     expect(res.body.exportedAt).toBeTruthy();
+    // Decrypted secrets must never be eligible for browser/proxy caching.
+    expect(res.headers['cache-control']).toBe('no-store');
   });
 
   test('401s without a session', async () => {
