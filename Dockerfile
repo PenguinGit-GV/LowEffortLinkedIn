@@ -19,4 +19,8 @@ USER node
 
 EXPOSE 3000
 
-CMD ["sh", "-c", "npm run migrate && npm start"]
+# exec makes node PID 1 once migrations finish. Without it, sh (and npm)
+# sit between the platform and the app, and neither forwards SIGTERM — so
+# index.js's graceful-shutdown handler never ran on a redeploy/stop and the
+# process was SIGKILLed mid-flight at the end of the grace period.
+CMD ["sh", "-c", "npm run migrate && exec node src/index.js"]
