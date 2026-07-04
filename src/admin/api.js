@@ -154,7 +154,10 @@ function registerAdminApi(router, { config, db, envConfig = config, reloadContro
   // change before an admin commits to it.
   router.post('/admin/api/restore', auth, restoreBody, requireJsonContentType, async (req, res) => {
     const entries = Array.isArray(req.body && req.body.entries) ? req.body.entries : null;
-    if (!entries || entries.some((e) => typeof e.key !== 'string' || typeof e.value !== 'string')) {
+    // `!e` first: a null/non-object element in a truncated or hand-edited
+    // backup file must land on this 400, not throw and fall through to
+    // Express's default 500.
+    if (!entries || entries.some((e) => !e || typeof e.key !== 'string' || typeof e.value !== 'string')) {
       res.status(400).json({ error: '"entries" must be an array of { key, value } strings' });
       return;
     }

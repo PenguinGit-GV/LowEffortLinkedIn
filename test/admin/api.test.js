@@ -342,4 +342,14 @@ describe('POST /admin/api/restore', () => {
       .send({ entries: [{ key: 'REMINDER_CRON' }] }); // missing value
     expect(res.status).toBe(400);
   });
+
+  test('400s (not 500s) a null entry in the payload', async () => {
+    const { agent } = buildApp();
+    const res = await agent
+      .post('/admin/api/restore')
+      .set('Cookie', sessionCookie())
+      .send({ entries: [null] }); // truncated/hand-edited backup file
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain('entries');
+  });
 });
