@@ -346,6 +346,38 @@ describe('resetOverride', () => {
   });
 });
 
+describe('resetOverride cross-field guard', () => {
+  const realModeRows = () => [
+    { key: 'LINKEDIN_MOCK_MODE', value: 'false', is_sensitive: false, updated_by: 'U111' },
+    { key: 'LINKEDIN_CLIENT_ID', value: encryptToken('id', KEY), is_sensitive: true, updated_by: 'U111' },
+    { key: 'LINKEDIN_CLIENT_SECRET', value: encryptToken('secret', KEY), is_sensitive: true, updated_by: 'U111' },
+    {
+      key: 'LINKEDIN_REDIRECT_URI',
+      value: 'https://example.up.railway.app/auth/linkedin/callback',
+      is_sensitive: false,
+      updated_by: 'U111',
+    },
+  ];
+
+  test('rejects resetting a credential that an active LINKEDIN_MOCK_MODE=false override depends on', async () => {
+    // Without this guard the reset succeeds, and the MUTATE reload writes
+    // null onto the live config — real mode with no client id.
+    const { db, overridesMap } = fakeDb({ overrideRows: realModeRows() });
+    await expect(
+      resetOverride(db, KEY, { key: 'LINKEDIN_CLIENT_ID', actorSlackId: 'U111', envConfig: envConfig() })
+    ).rejects.toMatchObject({ code: 'INVALID_VALUE' });
+    expect(overridesMap.has('LINKEDIN_CLIENT_ID')).toBe(true); // nothing was deleted
+  });
+
+  test('resetting LINKEDIN_MOCK_MODE itself is allowed — it returns to the validated env default', async () => {
+    const { db, overridesMap } = fakeDb({ overrideRows: realModeRows() });
+    await expect(
+      resetOverride(db, KEY, { key: 'LINKEDIN_MOCK_MODE', actorSlackId: 'U111', envConfig: envConfig() })
+    ).resolves.toMatchObject({ reload: 'restart' });
+    expect(overridesMap.has('LINKEDIN_MOCK_MODE')).toBe(false);
+  });
+});
+
 describe('listAudit', () => {
   test('filters by key and paginates newest-first', async () => {
     const { db } = fakeDb();

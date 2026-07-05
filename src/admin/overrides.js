@@ -186,6 +186,25 @@ async function resetOverride(db, encryptionKey, { key, actorSlackId, envConfig }
   const existing = await loadOverride(db, encryptionKey, key);
   if (!existing) return null;
 
+  // Resetting one key can break ANOTHER key's cross-field invariant — e.g.
+  // resetting a LINKEDIN_CLIENT_ID override while a LINKEDIN_MOCK_MODE=false
+  // override is active would leave real mode with no client id, and the
+  // MUTATE reload would write that null onto the live config immediately.
+  // Check every cross-validated entry against the effective config this
+  // reset would produce. (Set-path writes can't remove a dependency — every
+  // validator requires a non-empty value — so applyOverride only needs the
+  // written key's own check.)
+  const remaining = await loadOverrides(db, encryptionKey);
+  delete remaining[key];
+  const effective = mergeEffectiveConfig(envConfig, remaining);
+  for (const guardEntry of Object.values(ALLOW_LIST)) {
+    if (!guardEntry.crossValidate) continue;
+    const crossError = guardEntry.crossValidate(effective);
+    if (crossError) {
+      throw new ConfigOverrideError(`Cannot reset ${key}: ${crossError}`, 'INVALID_VALUE');
+    }
+  }
+
   const oldDisplay = redactForAudit(existing.raw, entry.sensitive);
   const newDisplay = redactForAudit(displayOf(envConfig[entry.configKey]), entry.sensitive);
 
