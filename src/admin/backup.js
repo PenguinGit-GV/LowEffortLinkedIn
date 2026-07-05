@@ -42,13 +42,26 @@ async function planRestore(db, encryptionKey, envConfig, entries) {
     if (typeof value !== 'string' || !entry.validate(value)) {
       return { key, status: 'skipped', reason: 'invalid value for this key' };
     }
-    const current = overrides[key] ? overrides[key].raw : String(envConfig[entry.configKey]);
-    if (current === value) return { key, status: 'unchanged' };
+    // Compare parsed runtime shapes, not strings: an env-sourced value only
+    // exists in parsed form (an array, a number), and re-serializing it with
+    // String() made equivalent inputs look changed — e.g. ADVOCACY_CHANNEL_ID
+    // env "C1, C2" stringifies to "C1,C2", so a backup holding the same list
+    // with spaces was reported as would-change and, applied, created a
+    // redundant override of an unchanged value.
+    const currentRuntime = overrides[key]
+      ? entry.parse
+        ? entry.parse(overrides[key].raw)
+        : overrides[key].raw
+      : envConfig[entry.configKey];
+    const newRuntime = entry.parse ? entry.parse(value) : value;
+    if (JSON.stringify(newRuntime) === JSON.stringify(currentRuntime)) {
+      return { key, status: 'unchanged' };
+    }
     return {
       key,
       status: 'would-change',
       from: overrides[key] ? 'override' : 'env',
-      currentDisplay: maskForDisplay(current, entry.sensitive),
+      currentDisplay: maskForDisplay(currentRuntime, entry.sensitive),
       newDisplay: maskForDisplay(value, entry.sensitive),
     };
   });
@@ -61,8 +74,16 @@ async function planRestore(db, encryptionKey, envConfig, entries) {
 // silently clobber a value another admin is actively editing (confirmed:
 // see plans/env-var-ui-feature-spec.md's Phase 4 review).
 async function applyRestore(db, encryptionKey, { entries, actorSlackId, envConfig, onApplied, checkLock }) {
+  // Apply cross-validated keys (LINKEDIN_MOCK_MODE) after everything else:
+  // a backup's entry order follows DB row order, which isn't guaranteed, and
+  // applying mock=false before the credential entries it depends on would
+  // reject a perfectly valid backup when restoring into a fresh database.
+  // The sort is stable, so the relative order of everything else is kept.
+  const ordered = [...entries].sort(
+    (a, b) => (getEntry(a.key)?.crossValidate ? 1 : 0) - (getEntry(b.key)?.crossValidate ? 1 : 0)
+  );
   const results = [];
-  for (const { key, value } of entries) {
+  for (const { key, value } of ordered) {
     if (checkLock) {
       const lockCheck = checkLock(key, actorSlackId);
       if (!lockCheck.ok) {

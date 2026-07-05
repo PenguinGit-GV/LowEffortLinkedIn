@@ -102,6 +102,18 @@ describe('planRestore', () => {
     expect(plan).toEqual([{ key: 'REMINDER_CRON', status: 'unchanged' }]);
   });
 
+  test('an equivalent value that only differs in formatting is unchanged, not would-change', async () => {
+    const { db } = fakeDb();
+    // envConfig()'s ADVOCACY_CHANNEL_ID is 'C123' — parsed to ['C123'], the
+    // same list this differently-formatted raw string parses to. Comparing
+    // String(parsedEnvValue) against the raw backup string used to report
+    // this as would-change, and applying it created a redundant override.
+    const plan = await planRestore(db, KEY, envConfig(), [
+      { key: 'ADVOCACY_CHANNEL_ID', value: ' C123 ' },
+    ]);
+    expect(plan).toEqual([{ key: 'ADVOCACY_CHANNEL_ID', status: 'unchanged' }]);
+  });
+
   test('flags a genuine change as would-change, noting the current source', async () => {
     const { db } = fakeDb();
     const plan = await planRestore(db, KEY, envConfig(), [{ key: 'REMINDER_CRON', value: '0 12 * * *' }]);
@@ -149,6 +161,29 @@ describe('applyRestore', () => {
     expect(overridesMap.get('REMINDER_CRON').value).toBe('0 12 * * *');
     expect(onApplied).toHaveBeenCalledWith('REMINDER_CRON', '0 12 * * *');
     expect(onApplied).toHaveBeenCalledTimes(1); // only the successful one
+  });
+
+  test('a backup listing LINKEDIN_MOCK_MODE before its credentials still restores in one pass', async () => {
+    // Export order follows DB row order, so a valid backup can list
+    // mock=false ahead of the credential overrides it depends on. Restoring
+    // into a fresh database (envConfig() here: mock mode, no LINKEDIN_*)
+    // must not reject the flip: cross-validated keys are applied last.
+    const { db, overridesMap } = fakeDb();
+    const results = await applyRestore(db, KEY, {
+      entries: [
+        { key: 'LINKEDIN_MOCK_MODE', value: 'false' },
+        { key: 'LINKEDIN_CLIENT_ID', value: 'id' },
+        { key: 'LINKEDIN_CLIENT_SECRET', value: 'secret' },
+        {
+          key: 'LINKEDIN_REDIRECT_URI',
+          value: 'https://example.up.railway.app/auth/linkedin/callback',
+        },
+      ],
+      actorSlackId: 'U111',
+      envConfig: envConfig(),
+    });
+    expect(results.filter((r) => r.status === 'applied')).toHaveLength(4);
+    expect(overridesMap.has('LINKEDIN_MOCK_MODE')).toBe(true);
   });
 
   test('rejects a key someone else holds an active edit-lock on, without aborting the rest', async () => {

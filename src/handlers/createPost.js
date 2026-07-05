@@ -233,11 +233,38 @@ async function publishPost({ db, client, config, logger }, { parsed, userId, ori
 
   // Record every card that landed, then keep the first as the post's "primary"
   // for backward-compatible reads and the expiry job's due-scan filter.
-  await recordPostCards(db, postId, broadcasts);
-  await db('posts').where({ id: postId }).update({
-    slack_channel_id: broadcasts[0].slack_channel_id,
-    slack_message_ts: broadcasts[0].slack_message_ts,
-  });
+  try {
+    await recordPostCards(db, postId, broadcasts);
+    await db('posts').where({ id: postId }).update({
+      slack_channel_id: broadcasts[0].slack_channel_id,
+      slack_message_ts: broadcasts[0].slack_message_ts,
+    });
+  } catch (err) {
+    // The cards are live in Slack but not (fully) recorded — the share
+    // counter and the expiry job could never find them, and the "try again"
+    // the caller shows for this failure would broadcast duplicates right
+    // next to them. Withdraw the broadcast and remove the post row
+    // (post_cards rows cascade) so a retry starts clean, then let the
+    // failure propagate.
+    logger.error(
+      `Recording cards for post ${postId} failed — withdrawing ${broadcasts.length} card(s): ${err.message}`
+    );
+    for (const b of broadcasts) {
+      try {
+        await client.chat.delete({ channel: b.slack_channel_id, ts: b.slack_message_ts });
+      } catch (delErr) {
+        logger.error(
+          `Could not withdraw the card in ${b.slack_channel_id}: ${delErr.data?.error || delErr.message}`
+        );
+      }
+    }
+    try {
+      await db('posts').where({ id: postId }).del();
+    } catch (delErr) {
+      logger.error(`Could not remove orphaned post ${postId}: ${delErr.message}`);
+    }
+    throw err;
+  }
 
   // A partial failure is not surfaced to the marketer, but the operator needs
   // to know a configured channel is misconfigured (e.g. app not invited).

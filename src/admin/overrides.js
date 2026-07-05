@@ -18,37 +18,53 @@ class ConfigOverrideError extends Error {
   }
 }
 
-// Decrypts every stored row's raw string value. Rows for keys no longer in
-// the allow-list (e.g. removed in a later deploy) are skipped rather than
-// thrown on — a stale row shouldn't 500 an unrelated admin action. The same
-// goes for a row that no longer decrypts (a rotated TOKEN_ENCRYPTION_KEY or
-// a corrupted value): this runs unconditionally at boot (index.js), so
-// throwing here wouldn't 500 one request — it would crash-loop the whole
-// process, taking down the very admin UI that could fix the bad row.
+// -> { raw, updatedAt, updatedBy }, or null when the row can't be used: its
+// key is no longer in the allow-list (e.g. removed in a later deploy), or it
+// no longer decrypts (a rotated TOKEN_ENCRYPTION_KEY or a corrupted value).
+// A stale row is skipped rather than thrown on — it shouldn't 500 an
+// unrelated admin action, and loadOverrides runs unconditionally at boot
+// (index.js), where throwing wouldn't 500 one request — it would crash-loop
+// the whole process, taking down the very admin UI that could fix the bad
+// row.
+function decodeOverrideRow(row, encryptionKey, logger) {
+  const entry = getEntry(row.key);
+  if (!entry) return null;
+  let raw;
+  if (row.is_sensitive) {
+    try {
+      raw = decryptToken(row.value, encryptionKey);
+    } catch {
+      logger.error(
+        `Config override for ${row.key} could not be decrypted (rotated ` +
+          'TOKEN_ENCRYPTION_KEY or corrupted row?) — ignoring it; the env ' +
+          'default applies until the value is re-entered in the admin UI'
+      );
+      return null;
+    }
+  } else {
+    raw = row.value;
+  }
+  return { raw, updatedAt: row.updated_at, updatedBy: row.updated_by };
+}
+
+// Decrypts every stored row's raw string value, keyed by env var name.
 async function loadOverrides(db, encryptionKey, { logger = console } = {}) {
   const rows = await db('config_overrides').select();
   const out = {};
   for (const row of rows) {
-    const entry = getEntry(row.key);
-    if (!entry) continue;
-    let raw;
-    if (row.is_sensitive) {
-      try {
-        raw = decryptToken(row.value, encryptionKey);
-      } catch {
-        logger.error(
-          `Config override for ${row.key} could not be decrypted (rotated ` +
-            'TOKEN_ENCRYPTION_KEY or corrupted row?) — ignoring it; the env ' +
-            'default applies until the value is re-entered in the admin UI'
-        );
-        continue;
-      }
-    } else {
-      raw = row.value;
-    }
-    out[row.key] = { raw, updatedAt: row.updated_at, updatedBy: row.updated_by };
+    const decoded = decodeOverrideRow(row, encryptionKey, logger);
+    if (decoded) out[row.key] = decoded;
   }
   return out;
+}
+
+// Single-key variant for the write paths: loading (and decrypting) every
+// override just to read one key's prior value would also re-log the
+// "could not be decrypted" error for an unrelated corrupted row on every
+// write.
+async function loadOverride(db, encryptionKey, key, { logger = console } = {}) {
+  const row = await db('config_overrides').where({ key }).first();
+  return row ? decodeOverrideRow(row, encryptionKey, logger) : null;
 }
 
 // envConfig (loadConfig(process.env)) + DB overrides -> a new config-shaped
@@ -113,8 +129,19 @@ async function applyOverride(db, encryptionKey, { key, rawValue, actorSlackId, e
     throw new ConfigOverrideError(`"${rawValue}" is not a valid value for ${key}`, 'INVALID_VALUE');
   }
 
-  const overrides = await loadOverrides(db, encryptionKey);
-  const priorRaw = overrides[key] ? overrides[key].raw : displayOf(envConfig[entry.configKey]);
+  const existing = await loadOverride(db, encryptionKey, key);
+  // Per-key validate() can't see the rest of the config; entries whose
+  // validity depends on other keys (LINKEDIN_MOCK_MODE needs the LinkedIn
+  // credentials) veto based on the effective config this write would
+  // produce at the next boot — the one write-path case that needs the full
+  // override set.
+  if (entry.crossValidate) {
+    const overrides = await loadOverrides(db, encryptionKey);
+    const effective = mergeEffectiveConfig(envConfig, { ...overrides, [key]: { raw: rawValue } });
+    const crossError = entry.crossValidate(effective);
+    if (crossError) throw new ConfigOverrideError(crossError, 'INVALID_VALUE');
+  }
+  const priorRaw = existing ? existing.raw : displayOf(envConfig[entry.configKey]);
   const oldDisplay = redactForAudit(priorRaw, entry.sensitive);
   const newDisplay = redactForAudit(rawValue, entry.sensitive);
   const storedValue = entry.sensitive ? encryptToken(rawValue, encryptionKey) : rawValue;
@@ -156,9 +183,27 @@ async function resetOverride(db, encryptionKey, { key, actorSlackId, envConfig }
     throw new ConfigOverrideError(`"${key}" is not a manageable configuration variable`, 'NOT_MANAGED');
   }
 
-  const overrides = await loadOverrides(db, encryptionKey);
-  const existing = overrides[key];
+  const existing = await loadOverride(db, encryptionKey, key);
   if (!existing) return null;
+
+  // Resetting one key can break ANOTHER key's cross-field invariant — e.g.
+  // resetting a LINKEDIN_CLIENT_ID override while a LINKEDIN_MOCK_MODE=false
+  // override is active would leave real mode with no client id, and the
+  // MUTATE reload would write that null onto the live config immediately.
+  // Check every cross-validated entry against the effective config this
+  // reset would produce. (Set-path writes can't remove a dependency — every
+  // validator requires a non-empty value — so applyOverride only needs the
+  // written key's own check.)
+  const remaining = await loadOverrides(db, encryptionKey);
+  delete remaining[key];
+  const effective = mergeEffectiveConfig(envConfig, remaining);
+  for (const guardEntry of Object.values(ALLOW_LIST)) {
+    if (!guardEntry.crossValidate) continue;
+    const crossError = guardEntry.crossValidate(effective);
+    if (crossError) {
+      throw new ConfigOverrideError(`Cannot reset ${key}: ${crossError}`, 'INVALID_VALUE');
+    }
+  }
 
   const oldDisplay = redactForAudit(existing.raw, entry.sensitive);
   const newDisplay = redactForAudit(displayOf(envConfig[entry.configKey]), entry.sensitive);

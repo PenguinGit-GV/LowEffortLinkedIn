@@ -71,7 +71,11 @@ function registerAdminOps(router, { config, db, slackClient, logger = console })
     // could cut the connection before this response reaches the browser.
     // Signalled on 'finish' so the response has flushed first, with a timed
     // backstop in case 'finish' never fires; Railway's restart policy brings
-    // the container back up with the now-persisted config.
+    // the container back up with the now-persisted config. That relaunch
+    // depends on railway.json's restartPolicyType being ALWAYS: the graceful
+    // path exits 0, and under ON_FAILURE a zero-exit container is left
+    // stopped — this button would take the service down until someone
+    // manually redeploys.
     let signalled = false;
     const requestShutdown = () => {
       if (signalled) return;

@@ -264,12 +264,13 @@ describe('buildModal', () => {
 });
 
 describe('publishPost', () => {
-  function makeDbStub() {
+  function makeDbStub({ failCardInsert = false } = {}) {
     const calls = { inserts: [], updates: [], deletes: [], cardInserts: [] };
     const db = (table) => {
       if (table === 'post_cards') {
         return {
           insert: async (rows) => {
+            if (failCardInsert) throw new Error('db connection lost');
             calls.cardInserts.push({ table, rows });
             return rows;
           },
@@ -425,6 +426,31 @@ describe('publishPost', () => {
       patch: { slack_channel_id: 'C_ADVOCACY1', slack_message_ts: '111.222' },
     });
     expect(db.calls.deletes).toHaveLength(0);
+  });
+
+  test('withdraws live cards and removes the post when recording them fails', async () => {
+    const db = makeDbStub({ failCardInsert: true });
+    const client = {
+      chat: {
+        postMessage: jest.fn().mockResolvedValue({ channel: 'C_ADVOCACY', ts: '111.222' }),
+        delete: jest.fn().mockResolvedValue({}),
+        postEphemeral: jest.fn().mockResolvedValue({}),
+      },
+    };
+
+    await expect(
+      publishPost(
+        { db, client, config, logger: { error: jest.fn() } },
+        { parsed, userId: 'U_MARKETER', originChannelId: 'C_ORIGIN' }
+      )
+    ).rejects.toThrow('db connection lost');
+
+    // The live-but-untracked card is taken down and the post row removed, so
+    // the "try again" the marketer sees starts clean instead of duplicating
+    // cards the counter and expiry job could never find.
+    expect(client.chat.delete).toHaveBeenCalledWith({ channel: 'C_ADVOCACY', ts: '111.222' });
+    expect(db.calls.deletes[0].cond).toEqual({ id: 'post-uuid-1' });
+    expect(db.calls.updates).toHaveLength(0);
   });
 
   test('reports partial broadcast failures but succeeds if at least one channel works', async () => {

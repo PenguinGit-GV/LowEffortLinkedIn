@@ -12,7 +12,9 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          # Match the production image (Dockerfile: node:22-alpine) so CI
+          # exercises the runtime that actually ships.
+          node-version: 22
           cache: npm
       - run: npm ci
       - run: npm test

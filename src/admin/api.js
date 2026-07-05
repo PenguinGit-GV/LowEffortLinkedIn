@@ -30,6 +30,17 @@ function registerAdminApi(router, { config, db, envConfig = config, reloadContro
   // One registry per running server, matching crypto/singleUse.js's
   // in-memory-because-single-process rationale (Phase 4.3 edit locking).
   const lockRegistry = createLockRegistry();
+  // The backup response holds decrypted secret values and the rest of the
+  // API holds operational detail; none of it may land in a browser's disk
+  // cache (a 200 with no caching headers is eligible for heuristic
+  // caching). The /admin page itself already sends no-store (pages.js);
+  // this covers the whole API surface, including the ops routes server.js
+  // registers after this call.
+  router.use('/admin/api', (_req, res, next) => {
+    res.set('Cache-Control', 'no-store');
+    next();
+  });
+
   // Small, bounded body — these are single config values, not file uploads.
   const jsonBody = express.json({ limit: '16kb' });
   // Backups can legitimately hold every allow-listed key's value.
@@ -154,7 +165,10 @@ function registerAdminApi(router, { config, db, envConfig = config, reloadContro
   // change before an admin commits to it.
   router.post('/admin/api/restore', auth, restoreBody, requireJsonContentType, async (req, res) => {
     const entries = Array.isArray(req.body && req.body.entries) ? req.body.entries : null;
-    if (!entries || entries.some((e) => typeof e.key !== 'string' || typeof e.value !== 'string')) {
+    // `!e` first: a null/non-object element in a truncated or hand-edited
+    // backup file must land on this 400, not throw and fall through to
+    // Express's default 500.
+    if (!entries || entries.some((e) => !e || typeof e.key !== 'string' || typeof e.value !== 'string')) {
       res.status(400).json({ error: '"entries" must be an array of { key, value } strings' });
       return;
     }

@@ -47,7 +47,13 @@ function registerAdminAuthRoutes(router, { config, logger = console, openId = de
       setSessionCookie(res, config, slackUserId);
       res.redirect(302, '/admin');
     } catch (err) {
-      logger.error('GET /admin/login/callback failed:', err);
+      // Never log the raw error: a failed openid.connect.token call throws
+      // an axios error whose request body carries SLACK_CLIENT_SECRET and
+      // the authorization code. Status + message is enough to debug, same
+      // discipline as routes/auth.js's LinkedIn exchange.
+      logger.error(
+        `GET /admin/login/callback failed: ${err.response?.status || ''} ${err.message}`
+      );
       res.status(502).send('Sign-in failed. Please try again.');
     }
   });

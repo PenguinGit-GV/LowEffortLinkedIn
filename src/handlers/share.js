@@ -31,6 +31,13 @@ const inFlight = new Set();
 const is401 = (err) => err.response?.status === 401 && !err.isCdnUpload;
 const linkedinErrorText = (err) =>
   err.response?.data?.message || err.data?.error || err.message || 'unknown error';
+// Never log the raw error object here: axios errors carry the whole request
+// config, including the Authorization header — the member's plaintext
+// LinkedIn access token (or the Slack bot token for file fetches), the very
+// values tokenCipher.js encrypts at rest. Status + message is enough to
+// debug, same discipline as routes/auth.js's OAuth exchange.
+const linkedinErrorLogLine = (err) =>
+  `${err.response?.status || ''} ${linkedinErrorText(err)}`.trim();
 
 // Trigger point 3 from §2.2: LinkedIn said 401 mid-share (token revoked on
 // their side) — treat identically to "not connected": clear the stored
@@ -51,19 +58,30 @@ async function handleRevokedToken({ db, config, client }, { userId, channelId })
 // been broadcast to several channels; every card is refreshed so the counter
 // stays in sync everywhere (one card's Slack failure doesn't block the rest).
 async function updateCardCounter({ db, client, logger }, post) {
-  const cards = await loadPostCards(db, post);
+  // Re-read the row rather than trusting the pipeline's snapshot: a share
+  // that lands moments before expires_at races the expiry cron, and
+  // rebuilding from a snapshot whose expired_at is still null would put the
+  // Share buttons back on a card the job just stripped — permanently, since
+  // the job never revisits a stamped post. Deriving "closed" from
+  // expires_at as well covers the sliver where the job has updated the card
+  // but not stamped expired_at yet.
+  const fresh = (await db('posts').where({ id: post.id }).first()) || post;
+  const expiredAt =
+    fresh.expired_at ||
+    (fresh.expires_at && new Date(fresh.expires_at) <= new Date() ? new Date() : null);
+  const cards = await loadPostCards(db, fresh);
   if (cards.length === 0) return;
   const [{ count }] = await db('shares')
-    .where({ post_id: post.id, status: 'success' })
+    .where({ post_id: fresh.id, status: 'success' })
     .count();
   const shareCount = Number(count);
-  const blocks = buildPostCard({ post, shareCount });
+  const blocks = buildPostCard({ post: { ...fresh, expired_at: expiredAt }, shareCount });
   for (const card of cards) {
     try {
       await client.chat.update({
         channel: card.slack_channel_id,
         ts: card.slack_message_ts,
-        text: `New post ready to share: ${post.destination_url}`,
+        text: `New post ready to share: ${fresh.destination_url}`,
         blocks,
       });
     } catch (err) {
@@ -193,7 +211,7 @@ async function runSharePipeline(
           await handleRevokedToken({ db, config, client }, { userId, channelId });
           return;
         }
-        logger.error('Share image step failed', err);
+        logger.error(`Share image step failed: ${linkedinErrorLogLine(err)}`);
         await failShare(`image upload failed: ${linkedinErrorText(err)}`);
         return;
       }
@@ -225,7 +243,7 @@ async function runSharePipeline(
         await handleRevokedToken({ db, config, client }, { userId, channelId });
         return;
       }
-      logger.error('LinkedIn post failed', err);
+      logger.error(`LinkedIn post failed: ${linkedinErrorLogLine(err)}`);
       await failShare(linkedinErrorText(err));
       return;
     }

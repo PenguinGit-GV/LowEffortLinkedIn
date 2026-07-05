@@ -225,6 +225,40 @@ describe('runSharePipeline', () => {
     );
   });
 
+  test('the counter refresh cannot resurrect Share buttons on a card the expiry job just closed', async () => {
+    // The share passes the expiry check, then the expiry cron strips the
+    // card's buttons and stamps expired_at before the counter refresh runs.
+    // The refresh must rebuild from the CURRENT row (closed), not the
+    // pipeline's pre-share snapshot — otherwise the buttons come back
+    // permanently, since the job never revisits a stamped post.
+    const dbParts = fakeDb();
+    const innerDb = dbParts.db;
+    let postReads = 0;
+    const db = (table) => {
+      if (table === 'posts') {
+        return {
+          where: () => ({
+            first: async () => {
+              postReads += 1;
+              // First read: the pipeline's pre-share snapshot, still open.
+              // Later reads: the job has stamped expired_at in the meantime.
+              return postReads === 1 ? POST : { ...POST, expired_at: new Date() };
+            },
+          }),
+        };
+      }
+      return innerDb(table);
+    };
+    db.fn = innerDb.fn;
+    const d = { ...deps({ dbParts }), db };
+    await runSharePipeline(d, JOB);
+
+    expect(dbParts.shareInserts).toHaveLength(1);
+    const updated = d.client.chat.update.mock.calls[0][0];
+    expect(updated.blocks.some((b) => b.type === 'actions')).toBe(false);
+    expect(JSON.stringify(updated.blocks)).toContain('Sharing closed');
+  });
+
   test('no reaction after the first share', async () => {
     const d = deps({ dbParts: fakeDb({ successCount: 2 }) });
     await runSharePipeline(d, JOB);
