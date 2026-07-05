@@ -163,6 +163,29 @@ describe('applyRestore', () => {
     expect(onApplied).toHaveBeenCalledTimes(1); // only the successful one
   });
 
+  test('a backup listing LINKEDIN_MOCK_MODE before its credentials still restores in one pass', async () => {
+    // Export order follows DB row order, so a valid backup can list
+    // mock=false ahead of the credential overrides it depends on. Restoring
+    // into a fresh database (envConfig() here: mock mode, no LINKEDIN_*)
+    // must not reject the flip: cross-validated keys are applied last.
+    const { db, overridesMap } = fakeDb();
+    const results = await applyRestore(db, KEY, {
+      entries: [
+        { key: 'LINKEDIN_MOCK_MODE', value: 'false' },
+        { key: 'LINKEDIN_CLIENT_ID', value: 'id' },
+        { key: 'LINKEDIN_CLIENT_SECRET', value: 'secret' },
+        {
+          key: 'LINKEDIN_REDIRECT_URI',
+          value: 'https://example.up.railway.app/auth/linkedin/callback',
+        },
+      ],
+      actorSlackId: 'U111',
+      envConfig: envConfig(),
+    });
+    expect(results.filter((r) => r.status === 'applied')).toHaveLength(4);
+    expect(overridesMap.has('LINKEDIN_MOCK_MODE')).toBe(true);
+  });
+
   test('rejects a key someone else holds an active edit-lock on, without aborting the rest', async () => {
     const { db, overridesMap } = fakeDb();
     const checkLock = jest.fn((key) =>

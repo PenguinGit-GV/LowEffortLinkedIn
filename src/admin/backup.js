@@ -74,8 +74,16 @@ async function planRestore(db, encryptionKey, envConfig, entries) {
 // silently clobber a value another admin is actively editing (confirmed:
 // see plans/env-var-ui-feature-spec.md's Phase 4 review).
 async function applyRestore(db, encryptionKey, { entries, actorSlackId, envConfig, onApplied, checkLock }) {
+  // Apply cross-validated keys (LINKEDIN_MOCK_MODE) after everything else:
+  // a backup's entry order follows DB row order, which isn't guaranteed, and
+  // applying mock=false before the credential entries it depends on would
+  // reject a perfectly valid backup when restoring into a fresh database.
+  // The sort is stable, so the relative order of everything else is kept.
+  const ordered = [...entries].sort(
+    (a, b) => (getEntry(a.key)?.crossValidate ? 1 : 0) - (getEntry(b.key)?.crossValidate ? 1 : 0)
+  );
   const results = [];
-  for (const { key, value } of entries) {
+  for (const { key, value } of ordered) {
     if (checkLock) {
       const lockCheck = checkLock(key, actorSlackId);
       if (!lockCheck.ok) {
