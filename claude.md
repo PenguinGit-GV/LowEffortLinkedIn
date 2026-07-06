@@ -1,0 +1,9 @@
+- Keep responses short and simple.
+- avoid showing code snippets
+- respond in plain english only, avoid talking about specific parts of the code.
+- avoid writig one time scripts in permanent files.
+- Dont mock data except for tests
+- exhaust all options and use existing implementations before introducing new patterns
+- if introducting a new pattern to replace an old one, remove the old implementaiton
+- Every error is yours to trace and fix - not label, not defer
+- Fix bugs  at source - fix the root cause, not the consumer
