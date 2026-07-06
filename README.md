@@ -1,9 +1,11 @@
 # LowEffortLinkedIn
-Low Effort employee advocacy tool for startups who have employees with LinkedIn disabilities.
+Low Effort employee advocacy tool for startups who have employees with LinkedIn allergies or disabilities.
 
-Use Case: Difficulty getting employees outside of marketing to share social media posts. 
+**Use Case:** Difficulty getting employees outside of marketing to share conmpany social media posts. 
 
-Solution: A marketer types /create-post within a slack channel, enters URL of the articl to share, up to 3 variations of the post text, an optional image and sends. Other employees ust connect their personal LinkedIn accounts once, then they just click on the Slack-native button, and the post is auto-shared. Takes 1 click and they never leave slack. 
+**Solution:** A marketer types /create-post within a slack channel, enters URL of the article to share, up to 3 variations of the post text, an optional image and sends. Employees just connect their personal LinkedIn accounts once, then they just click on the Slack post button, and it is auto-shared. Takes 1 click and they never leave slack. 
+
+**Where?** Designed to be deployed on Railway.com as a small service with postgres database. Most setup is creating the application within Slack. Env variables can be edited directly in the railway backend or the small web UI for the app.
 
 
 See [docs/PLAN.md](docs/PLAN.md) for the feature spec and implementation plan, [docs/SETUP.md](docs/SETUP.md) for the setup + deploy guide (Railway, Slack app, LinkedIn app), and [PRIVACY.md](PRIVACY.md) for the privacy policy.
